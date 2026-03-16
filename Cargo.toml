@@ -1,0 +1,40 @@
+[package]
+name = "warpinator-lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mdns-sd = "0.18.2"
+prost = "0.14.3"
+tokio = { version = "1.50.0", features = ["full"] }
+tokio-stream = "0.1.18"
+tonic = { version = "0.14.5", features = ["tls-ring"] }
+hostname = "0.4.2"
+tonic-prost = "0.14.5"
+tracing = "0.1.44"
+http = "1.4.0"
+x509-cert = { version = "0.2.5", features = ["builder"] }
+rsa = { version = "0.9.10", features = ["sha2"] }
+crypto_secretbox = { version = "0.1.1", features = ["salsa20"] }
+sha2 = "0.10.9"
+rand = "0.10.0"
+thiserror = "2.0.18"
+base64 = "0.22.1"
+tokio-util = "0.7.18"
+local-ip-address = "0.6.10"
+uuid = { version = "1.22.0", features = ["v4"] }
+chrono = "0.4.44"
+bitflags = "2.11.0"
+
+[build-dependencies]
+tonic-prost-build = "0.14.5"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"] }
+ratatui = "0.30.0"
+anyhow = "1.0.102"
+bytesize = "2.3.1"
+
+[features]
+default = ["messaging"]
+messaging = []
