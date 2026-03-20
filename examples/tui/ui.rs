@@ -8,6 +8,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use warpinator_lib::types::message;
+use warpinator_lib::types::remote::{RemoteConnectionError, RemoteState};
+use warpinator_lib::types::transfer::TransferState;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let root = Layout::default()
@@ -23,7 +25,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let top = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(24), // Remotes pane fixed width
+            Constraint::Length(32), // Remotes pane fixed width
             Constraint::Min(10),    // Transfers/messages take the rest
         ])
         .split(root[0]);
@@ -44,6 +46,45 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_statusbar(f, app, root[2]);
 }
 
+fn remote_state_span(state: &'_ RemoteState) -> Span<'_> {
+    match state {
+        RemoteState::Disconnected => {
+            Span::styled("[disconnected]", Style::default().fg(Color::DarkGray))
+        }
+        RemoteState::Connecting => Span::styled("[connecting]", Style::default().fg(Color::Yellow)),
+        RemoteState::AwaitingDuplex => {
+            Span::styled("[awaiting]", Style::default().fg(Color::Yellow))
+        }
+        RemoteState::Connected => Span::styled("[connected]", Style::default().fg(Color::Green)),
+        RemoteState::Error(err) => {
+            let msg = match err {
+                RemoteConnectionError::SslError => "[ssl error]",
+                RemoteConnectionError::GroupCodeMismatch => "[group mismatch]",
+                RemoteConnectionError::NoCertificate => "[no cert]",
+                RemoteConnectionError::DuplexError => "[duplex err]",
+            };
+            Span::styled(msg, Style::default().fg(Color::Red))
+        }
+    }
+}
+
+fn transfer_state_span(state: &'_ TransferState) -> Span<'_> {
+    match state {
+        TransferState::Initializing => Span::styled("[init]", Style::default().fg(Color::DarkGray)),
+        TransferState::WaitingPermission => {
+            Span::styled("[waiting]", Style::default().fg(Color::Yellow))
+        }
+        TransferState::InProgress => {
+            Span::styled("[in progress]", Style::default().fg(Color::Green))
+        }
+        TransferState::Paused => Span::styled("[paused]", Style::default().fg(Color::Yellow)),
+        TransferState::Completed => Span::styled("[done]", Style::default().fg(Color::Green)),
+        TransferState::Canceled => Span::styled("[canceled]", Style::default().fg(Color::DarkGray)),
+        TransferState::Denied => Span::styled("[denied]", Style::default().fg(Color::Red)),
+        TransferState::Failed(_) => Span::styled("[failed]", Style::default().fg(Color::Red)),
+    }
+}
+
 fn draw_remotes(f: &mut Frame, app: &App, area: Rect) {
     let focused = app.focus == Focus::Remotes;
     let block = Block::default()
@@ -54,7 +95,14 @@ fn draw_remotes(f: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = app
         .remotes
         .iter()
-        .map(|remote| ListItem::new(remote.display_name.as_str()))
+        .map(|remote| {
+            let state_span = remote_state_span(&remote.state);
+            ListItem::new(Line::from(vec![
+                state_span,
+                Span::raw(" "),
+                Span::styled(remote.display_name.as_str(), Style::default()),
+            ]))
+        })
         .collect();
 
     let mut state = ListState::default();
@@ -109,8 +157,13 @@ fn draw_transfers(f: &mut Frame, app: &App, area: Rect) {
                     ByteSize(transfer.total_bytes).to_string()
                 )
             };
+
+            let state_span = transfer_state_span(&transfer.state);
+
             ListItem::new(Line::from(vec![
-                Span::raw("  "),
+                Span::raw(" "),
+                state_span,
+                Span::raw(" "),
                 Span::styled(desc, Style::default()),
             ]))
         })

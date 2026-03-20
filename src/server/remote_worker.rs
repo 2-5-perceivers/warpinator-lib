@@ -5,9 +5,11 @@ use crate::server::authenticator::{Authenticator, CertUnboxError};
 use crate::server::remote_manager::RemoteManager;
 use crate::types::message::{Direction, Message};
 use crate::types::remote::{RemoteConnectionError, RemoteState};
+use crate::types::transfer::{Transfer, TransferError, TransferState};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -405,6 +407,51 @@ impl RemoteWorker {
         }
 
         Ok(())
+    }
+
+    pub async fn send_transfer_request(
+        &self,
+        source_paths: Vec<PathBuf>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let client = self.client.read().await;
+        let client = client.as_ref().ok_or("No client")?;
+        let mut client = client.clone();
+
+        let mut transfer = Transfer::new_outgoing(self.uuid.clone(), source_paths.clone()).await;
+
+        // Add transfer in initializing state before processing paths, so it appears in UI immediately
+        self.remote_manager
+            .add_transfer(&self.uuid, transfer.clone())
+            .await?;
+
+        let processing_result = transfer.process_paths(&source_paths).await;
+
+        match processing_result {
+            Ok(_) => {
+                client
+                    .process_transfer_op_request(transfer.as_proto(self.server_fullname.as_str()))
+                    .await?;
+                self.remote_manager
+                    .update_transfer(&self.uuid, &transfer.uuid, |t| {
+                        t.total_bytes = transfer.total_bytes;
+                        t.file_count = transfer.file_count;
+                        t.entry_names = transfer.entry_names.clone();
+                        t.single_name = transfer.single_name.clone();
+                        t.single_mime_type = transfer.single_mime_type.clone();
+                        t.state = TransferState::WaitingPermission;
+                    })
+                    .await?;
+                Ok(())
+            }
+            Err(e) => {
+                self.remote_manager
+                    .update_transfer(&self.uuid, &transfer.uuid, |t| {
+                        t.state = TransferState::Failed(TransferError::FailedToProcessFiles);
+                    })
+                    .await?;
+                Err(Box::new(e))
+            }
+        }
     }
 
     #[cfg(feature = "messaging")]

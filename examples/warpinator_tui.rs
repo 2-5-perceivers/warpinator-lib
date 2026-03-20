@@ -219,6 +219,30 @@ async fn run(
                             }
                         }
 
+                        // Handle file path send (split by ';' into multiple paths)
+                        if key.code == KeyCode::Enter {
+                            if let Some(InputMode::FilePath) = app.input_mode {
+                                if let Some(remote) = app.current_remote() {
+                                    let value = app.input_buf.clone();
+                                    let remote_uuid = remote.uuid.clone();
+                                    let rm = remote_manager.clone();
+                                    tokio::spawn(async move {
+                                        if let Some(worker) = rm.get_worker(&remote_uuid).await {
+                                            let paths: Vec<std::path::PathBuf> = value
+                                                .split(';')
+                                                .map(|s| s.trim())
+                                                .filter(|s| !s.is_empty())
+                                                .map(|s| std::path::PathBuf::from(s))
+                                                .collect();
+                                            if !paths.is_empty() {
+                                                let _ = worker.send_transfer_request(paths).await;
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        }
+
                         if app.handle_key(key).is_quit() {
                             break;
                         }
