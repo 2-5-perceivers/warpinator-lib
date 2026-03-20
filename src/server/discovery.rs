@@ -1,6 +1,6 @@
-use crate::server::remote::{Remote, RemoteState};
 use crate::server::remote_manager;
 use crate::server::remote_worker::ConnectRemoteError;
+use crate::types::remote::{Remote, RemoteState};
 use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent};
 use thiserror::Error;
 use tracing::field;

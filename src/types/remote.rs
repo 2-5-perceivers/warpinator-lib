@@ -1,6 +1,6 @@
 #[cfg(feature = "messaging")]
-pub use crate::server::message::Message;
-use crate::server::transfer::Transfer;
+use crate::types::message::Message;
+use crate::types::transfer::Transfer;
 use std::net::IpAddr;
 use thiserror::Error;
 

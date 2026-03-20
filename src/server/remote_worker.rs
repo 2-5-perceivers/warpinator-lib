@@ -1,10 +1,10 @@
-use crate::message::{Direction, Message};
+use crate::config::protocol::ProtocolConfig;
+use crate::proto::LookupName;
 use crate::proto::warp_client::WarpClient;
-use crate::proto::{LookupName, TextMessage};
 use crate::server::authenticator::{Authenticator, CertUnboxError};
-use crate::server::protocol_config::ProtocolConfig;
-use crate::server::remote::RemoteState;
 use crate::server::remote_manager::RemoteManager;
+use crate::types::message::{Direction, Message};
+use crate::types::remote::{RemoteConnectionError, RemoteState};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use std::net::IpAddr;
@@ -141,7 +141,7 @@ impl RemoteWorker {
                     RemoteState::Error(ref e) => {
                         if matches!(
                             e,
-                            crate::server::remote::RemoteConnectionError::GroupCodeMismatch
+                            crate::types::remote::RemoteConnectionError::GroupCodeMismatch
                         ) {
                             // Group code mismatch is not retryable, stay in error state until manual intervention
                             break;
@@ -172,13 +172,11 @@ impl RemoteWorker {
             Ok(cert) => cert,
             Err(e) => {
                 let state = match e {
-                    ReceiveCertError::WrongGroupCode => RemoteState::Error(
-                        crate::server::remote::RemoteConnectionError::GroupCodeMismatch,
-                    ),
+                    ReceiveCertError::WrongGroupCode => {
+                        RemoteState::Error(RemoteConnectionError::GroupCodeMismatch)
+                    }
                     ReceiveCertError::Offline => RemoteState::Disconnected,
-                    _ => RemoteState::Error(
-                        crate::server::remote::RemoteConnectionError::NoCertificate,
-                    ),
+                    _ => RemoteState::Error(RemoteConnectionError::NoCertificate),
                 };
 
                 self.set_state(state).await;
@@ -190,10 +188,8 @@ impl RemoteWorker {
             Ok(ch) => ch,
             Err(e) => {
                 tracing::warn!(uuid = %self.uuid, "Failed to build TLS channel: {:#?}", e);
-                self.set_state(RemoteState::Error(
-                    crate::server::remote::RemoteConnectionError::SslError,
-                ))
-                .await;
+                self.set_state(RemoteState::Error(RemoteConnectionError::SslError))
+                    .await;
                 return Err(ConnectRemoteError::TlsError(e));
             }
         };
@@ -205,10 +201,8 @@ impl RemoteWorker {
         if let Err(e) = self.ping().await {
             tracing::warn!(uuid = %self.uuid, "Initial ping failed: {}", e);
             self.clear_channel().await;
-            self.set_state(RemoteState::Error(
-                crate::server::remote::RemoteConnectionError::SslError,
-            ))
-            .await;
+            self.set_state(RemoteState::Error(RemoteConnectionError::SslError))
+                .await;
             return Err(ConnectRemoteError::PingError(e));
         }
 
@@ -216,10 +210,8 @@ impl RemoteWorker {
         if let Err(e) = self.wait_for_duplex().await {
             tracing::warn!(uuid = %self.uuid, "Duplex failed: {}", e);
             self.clear_channel().await;
-            self.set_state(RemoteState::Error(
-                crate::server::remote::RemoteConnectionError::DuplexError,
-            ))
-            .await;
+            self.set_state(RemoteState::Error(RemoteConnectionError::DuplexError))
+                .await;
             return Err(ConnectRemoteError::DuplexError(e));
         }
 

@@ -1,3 +1,4 @@
+use crate::tui::app::{App, Focus, InputMode};
 use bytesize::ByteSize;
 use ratatui::{
     Frame,
@@ -6,8 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
-
-use crate::tui::app::{App, Focus, InputMode};
+use warpinator_lib::types::message;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let root = Layout::default()
@@ -145,8 +145,8 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|msg| {
             let dir = match msg.direction {
-                warpinator_lib::message::Direction::Sent => "→",
-                warpinator_lib::message::Direction::Received => "←",
+                message::Direction::Sent => "→",
+                message::Direction::Received => "←",
             };
             let line = Line::from(vec![
                 Span::styled(dir, Style::default().fg(Color::Yellow)),

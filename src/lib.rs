@@ -2,12 +2,10 @@ pub(crate) mod proto {
     tonic::include_proto!("warpinator");
 }
 
-mod server;
+pub mod config;
+pub(crate) mod grpc;
+pub(crate) mod server;
+pub mod types;
 
-pub use server::UserConfig;
 pub use server::WarpinatorServer;
-#[cfg(feature = "messaging")]
-pub use server::message;
-pub use server::remote;
 pub use server::remote_manager;
-pub use server::transfer;

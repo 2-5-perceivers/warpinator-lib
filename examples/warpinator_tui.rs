@@ -22,6 +22,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt};
 use tui::app::InputMode;
 use tui::app::{App, AppEvent};
+use warpinator_lib::WarpinatorServer;
+use warpinator_lib::config::user::UserConfig;
 use warpinator_lib::remote_manager::RemoteManager;
 
 #[derive(Clone)]
@@ -83,7 +85,7 @@ async fn main() -> Result<()> {
         ])
     );
 
-    let mut user_config_builder = warpinator_lib::UserConfig::builder()
+    let mut user_config_builder = UserConfig::builder()
         .default_bind_addr_v4()
         .default_bind_addr_v6()
         .hostname(&hostname)
@@ -95,7 +97,7 @@ async fn main() -> Result<()> {
     }
     let user_config = user_config_builder.build();
 
-    let server = warpinator_lib::WarpinatorServer::builder()
+    let server = WarpinatorServer::builder()
         .user_config(user_config)
         .service_name(&service_id)
         .build()

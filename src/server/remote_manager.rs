@@ -1,10 +1,10 @@
-#[cfg(feature = "messaging")]
-use crate::message::Message;
+use crate::config::protocol::ProtocolConfig;
 use crate::server::authenticator::Authenticator;
-use crate::server::protocol_config::ProtocolConfig;
-use crate::server::remote::Remote;
 use crate::server::remote_worker::RemoteWorker;
-use crate::server::transfer::Transfer;
+#[cfg(feature = "messaging")]
+use crate::types::message::Message;
+use crate::types::remote::Remote;
+use crate::types::transfer::Transfer;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;

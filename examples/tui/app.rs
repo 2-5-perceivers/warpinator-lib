@@ -1,10 +1,10 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::collections::{HashMap, VecDeque};
-use warpinator_lib::remote::Message;
-use warpinator_lib::{
-    remote_manager::{RemoteManager, WarpEvent},
-    {remote::Remote, transfer::Transfer},
-};
+use warpinator_lib::remote_manager::{RemoteManager, WarpEvent};
+#[cfg(feature = "messaging")]
+use warpinator_lib::types::message::Message;
+use warpinator_lib::types::remote::Remote;
+use warpinator_lib::types::transfer::Transfer;
 
 pub enum AppEvent {
     Terminal(ratatui::crossterm::event::Event),
@@ -14,7 +14,7 @@ pub enum AppEvent {
     TransferUpdated(String, Transfer), // remote_uuid, transfer
     Log(String),
     #[cfg(feature = "messaging")]
-    MessageAdded(String, warpinator_lib::remote::Message), // remote_uuid, message
+    MessageAdded(String, Message), // remote_uuid, message
 }
 
 impl AppEvent {

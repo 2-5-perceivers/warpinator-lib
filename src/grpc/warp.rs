@@ -1,14 +1,14 @@
+use crate::config::protocol::{ProtocolConfig, ProtocolFeatures};
+use crate::config::user::UserConfig;
 #[cfg(feature = "messaging")]
-use crate::message::Message;
 use crate::proto::{
     FileChunk, HaveDuplex, LookupName, OpInfo, RemoteMachineAvatar, RemoteMachineInfo, StopInfo,
     TextMessage, TransferOpRequest, VoidType, warp_server::Warp,
 };
-use crate::server::UserConfig;
-use crate::server::protocol_config::{ProtocolConfig, ProtocolFeatures};
-use crate::server::remote::RemoteState;
 use crate::server::remote_manager::{RemoteManager, WarpEvent};
-use crate::transfer::Transfer;
+use crate::types::message::Message;
+use crate::types::remote::RemoteState;
+use crate::types::transfer::Transfer;
 use std::time::Duration;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};

@@ -2,8 +2,8 @@ use crate::proto::{
     RegRequest, RegResponse, ServiceRegistration, warp_registration_server::WarpRegistration,
 };
 use crate::server::authenticator::Authenticator;
-use crate::server::remote::{Remote, RemoteState};
 use crate::server::remote_manager::RemoteManager;
+use crate::types::remote::{Remote, RemoteState};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -20,7 +20,7 @@ pub struct RegistrationServer {
 }
 
 impl RegistrationServer {
-    pub(crate) fn new(
+    pub fn new(
         authenticator: Arc<Authenticator>,
         remote_manager: RemoteManager,
         reg_service_message: ServiceRegistration,

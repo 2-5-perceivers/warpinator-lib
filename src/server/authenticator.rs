@@ -20,7 +20,7 @@ use x509_cert::{
 };
 
 #[derive(Error, Debug)]
-pub(crate) enum CertUnboxError {
+pub enum CertUnboxError {
     #[error("Boxed cert too short")]
     BoxTooShort,
     #[error("Decryption failed — wrong group code?")]
@@ -30,7 +30,7 @@ pub(crate) enum CertUnboxError {
 type GeneratedCert = (Vec<u8>, Vec<u8>); // (cert_pem, private_key_pem)
 
 #[derive(Debug)]
-pub(crate) struct Authenticator {
+pub struct Authenticator {
     /// The group code used to derive the SecretBox key
     group_code: String,
 

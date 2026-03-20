@@ -1,22 +1,15 @@
-mod authenticator;
+pub mod authenticator;
 mod discovery;
-#[cfg(feature = "messaging")]
-pub mod message;
-pub mod protocol_config;
-mod registration;
-pub mod remote;
 pub mod remote_manager;
 mod remote_worker;
-pub mod transfer;
-pub mod user_config;
-mod warp;
 
+use crate::config::protocol::ProtocolConfig;
+use crate::config::user::UserConfig;
+use crate::grpc;
 use crate::proto::{
     ServiceRegistration, warp_registration_server::WarpRegistrationServer, warp_server::WarpServer,
 };
 use crate::server::discovery::DiscoveryService;
-use crate::server::protocol_config::ProtocolConfig;
-pub use crate::server::user_config::UserConfig;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -140,7 +133,7 @@ impl WarpinatorServer {
             api_version: SERVICE_API_VERSION as u32,
             ipv6: reg_addr_v6.map_or("".to_string(), |reg| reg.ip().to_string()),
         };
-        let reg_svc = registration::RegistrationServer::new(
+        let reg_svc = grpc::registration::RegistrationServer::new(
             self.authenticator.clone(),
             self.remotes.clone(),
             reg_service_message,
@@ -161,7 +154,7 @@ impl WarpinatorServer {
             .bind_addr_v4
             .map(|addr_v4| SocketAddr::new(IpAddr::V4(addr_v4), self.user_config.port));
         // let warp_addr_v6 = self.user_config.bind_addr_v6.map(|addr_v6| SocketAddr::new(IpAddr::V6(addr_v6), self.user_config.port));
-        let warp_svc = warp::WarpServer::new(
+        let warp_svc = grpc::warp::WarpServer::new(
             self.user_config.clone(),
             self.protocol_config.clone(),
             self.remotes.clone(),

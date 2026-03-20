@@ -1,4 +1,5 @@
 use tracing_subscriber::fmt::format::FmtSpan;
+use warpinator_lib::config::user::UserConfig;
 use warpinator_lib::remote_manager::WarpEvent;
 
 #[tokio::main]
@@ -10,7 +11,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Warpinator starting...");
 
-    let user_config = warpinator_lib::UserConfig::builder()
+    let user_config = UserConfig::builder()
         .default_bind_addr_v4()
         .default_bind_addr_v6()
         .default_hostname()
