@@ -48,7 +48,7 @@ impl ReceiveState {
         Self {
             current_path: None,
             current_file: None,
-            speed: MovingAverage::new(15),
+            speed: MovingAverage::new(30),
             last_chunk_time: std::time::Instant::now(),
         }
     }

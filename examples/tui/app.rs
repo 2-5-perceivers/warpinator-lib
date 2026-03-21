@@ -1,5 +1,6 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::collections::{HashMap, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
 use warpinator_lib::remote_manager::{RemoteManager, WarpEvent};
 #[cfg(feature = "messaging")]
 use warpinator_lib::types::message::Message;
@@ -80,6 +81,15 @@ pub struct App {
     pub input_mode: Option<InputMode>,
     pub input_buf: String,
     pub log: VecDeque<String>,
+    // Cache to throttle UI updates for transfer stats (to reduce flicker)
+    pub transfer_display: HashMap<String, TransferDisplay>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TransferDisplay {
+    pub last_update_ms: u128,
+    pub displayed_bytes_transferred: u64,
+    pub displayed_bytes_per_second: u64,
 }
 
 impl App {
@@ -93,6 +103,7 @@ impl App {
             input_mode: None,
             input_buf: String::new(),
             log: VecDeque::with_capacity(200),
+            transfer_display: HashMap::new(),
         }
     }
 
@@ -136,12 +147,43 @@ impl App {
                 self.transfers
                     .entry(remote_uuid)
                     .or_default()
-                    .push(transfer);
+                    .push(transfer.clone());
+                // Initialize display cache for this transfer
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                self.transfer_display.insert(
+                    transfer.uuid.clone(),
+                    TransferDisplay {
+                        last_update_ms: now,
+                        displayed_bytes_transferred: transfer.bytes_transferred,
+                        displayed_bytes_per_second: transfer.bytes_per_second,
+                    },
+                );
             }
             AppEvent::TransferUpdated(remote_uuid, transfer) => {
                 if let Some(transfers) = self.transfers.get_mut(&remote_uuid) {
                     if let Some(t) = transfers.iter_mut().find(|t| t.uuid == transfer.uuid) {
-                        *t = transfer;
+                        *t = transfer.clone();
+                        let throttle_ms: u128 = 750;
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0);
+                        let entry = self
+                            .transfer_display
+                            .entry(transfer.uuid.clone())
+                            .or_insert(TransferDisplay {
+                                last_update_ms: 0,
+                                displayed_bytes_transferred: transfer.bytes_transferred,
+                                displayed_bytes_per_second: transfer.bytes_per_second,
+                            });
+                        if now.saturating_sub(entry.last_update_ms) >= throttle_ms {
+                            entry.last_update_ms = now;
+                            entry.displayed_bytes_transferred = transfer.bytes_transferred;
+                            entry.displayed_bytes_per_second = transfer.bytes_per_second;
+                        }
                     }
                 }
             }

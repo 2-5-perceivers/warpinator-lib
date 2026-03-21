@@ -11,6 +11,24 @@ use warpinator_lib::types::message;
 use warpinator_lib::types::remote::{RemoteConnectionError, RemoteState};
 use warpinator_lib::types::transfer::TransferState;
 
+fn fmt_seconds(secs: u64) -> String {
+    // format as "1h 2m 3s" or "2m 5s" or "5s"
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    let seconds = secs % 60;
+    let mut parts: Vec<String> = Vec::new();
+    if hours > 0 {
+        parts.push(format!("{}h", hours));
+    }
+    if minutes > 0 {
+        parts.push(format!("{}m", minutes));
+    }
+    if seconds > 0 || parts.is_empty() {
+        parts.push(format!("{}s", seconds));
+    }
+    parts.join(" ")
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     let root = Layout::default()
         .direction(Direction::Vertical)
@@ -131,40 +149,90 @@ fn draw_transfers(f: &mut Frame, app: &App, area: Rect) {
         .border_style(focus_style(focused));
 
     let transfers = app.current_transfers();
+
+    // Render list into the whole area; progress is inline per item
     let items: Vec<ListItem> = transfers
         .iter()
         .map(|transfer| {
-            let desc = if let Some(name) = &transfer.single_name {
-                // Single file: show name (size)
-                format!("{} ({})", name, ByteSize(transfer.total_bytes).to_string())
+            // Basic description (name or joined entries)
+            let base = if let Some(name) = &transfer.single_name {
+                name.clone()
             } else {
-                // Directory or multiple files: show up to 3 names, then count
                 let mut names = transfer
                     .entry_names
                     .iter()
                     .take(3)
                     .cloned()
                     .collect::<Vec<_>>();
-                let cutoff = transfer.entry_names.len() > 3;
-                if cutoff {
+                if transfer.entry_names.len() > 3 {
                     names.push("...".to_string());
                 }
-                let joined = names.join(", ");
-                format!(
-                    "{} {} files ({})",
-                    joined,
-                    transfer.file_count,
-                    ByteSize(transfer.total_bytes).to_string()
-                )
+                format!("{} {} files", names.join(", "), transfer.file_count)
+            };
+
+            // Use throttled display values when available to reduce update rate
+            let (disp_bytes_per_sec, disp_bytes_transferred) = app
+                .transfer_display
+                .get(&transfer.uuid)
+                .map(|d| (d.displayed_bytes_per_second, d.displayed_bytes_transferred))
+                .unwrap_or((transfer.bytes_per_second, transfer.bytes_transferred));
+
+            // Stats: keep parentheses for size; for in-progress show (speed /s, X remaining)
+            let stats = match transfer.state {
+                TransferState::InProgress => {
+                    // Format speed with a single decimal and human unit to reduce flicker
+                    let speed_val = disp_bytes_per_sec as f64;
+                    let speed = if speed_val >= 1024.0 * 1024.0 {
+                        format!("{:.1} MiB", speed_val / (1024.0 * 1024.0))
+                    } else if speed_val >= 1024.0 {
+                        format!("{:.1} KiB", speed_val / 1024.0)
+                    } else {
+                        format!("{} B", disp_bytes_per_sec)
+                    };
+
+                    let remaining_str = if disp_bytes_per_sec > 0 {
+                        let remaining = transfer.total_bytes.saturating_sub(disp_bytes_transferred);
+                        let mut secs = remaining / disp_bytes_per_sec.max(1);
+                        // round ETA to nearest 5 seconds to avoid rapid flicker
+                        let round_to = 5;
+                        secs = ((secs + (round_to / 2)) / round_to) * round_to;
+                        fmt_seconds(secs)
+                    } else {
+                        "--s".to_string()
+                    };
+                    format!("({} /s, {} remaining)", speed, remaining_str)
+                }
+                _ => format!("({})", ByteSize(transfer.total_bytes).to_string()),
+            };
+
+            // Inline progress bar (10 segments) and percentage — only for InProgress
+            let bar = if matches!(transfer.state, TransferState::InProgress)
+                && transfer.total_bytes > 0
+            {
+                let ratio = (disp_bytes_transferred as f64) / (transfer.total_bytes as f64);
+                let pct = (ratio * 100.0).round() as u64;
+                let bar_len = 10usize;
+                // Use floor to avoid back-and-forth jitter when ratio hovers on a boundary
+                let filled = ((ratio * (bar_len as f64)).floor() as usize).min(bar_len);
+                let filled_str: String = std::iter::repeat('█').take(filled).collect();
+                let empty_str: String = std::iter::repeat('░').take(bar_len - filled).collect();
+                format!(" [{}{}] {}%", filled_str, empty_str, pct)
+            } else {
+                "".to_string()
             };
 
             let state_span = transfer_state_span(&transfer.state);
 
+            // Build the ListItem with styled parts
             ListItem::new(Line::from(vec![
                 Span::raw(" "),
                 state_span,
                 Span::raw(" "),
-                Span::styled(desc, Style::default()),
+                Span::styled(base, Style::default()),
+                Span::raw(" "),
+                Span::raw(stats),
+                Span::raw(" "),
+                Span::raw(bar),
             ]))
         })
         .collect();
