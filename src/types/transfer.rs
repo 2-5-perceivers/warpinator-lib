@@ -12,6 +12,12 @@ pub enum TransferError {
     StorageFull,
     #[error("Processing of source files failed")]
     FailedToProcessFiles,
+    #[error("Failed to start transfer: {0}")]
+    FailedToStartTransfer(tonic::Status),
+    #[error("Remote tried to write outside of the destination folder")]
+    UnsafePath,
+    #[error("IO error during transfer")]
+    IoError,
 }
 
 #[derive(Clone, Debug)]

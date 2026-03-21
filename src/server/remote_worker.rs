@@ -1,15 +1,16 @@
 use crate::config::protocol::ProtocolConfig;
-use crate::proto::LookupName;
 use crate::proto::warp_client::WarpClient;
+use crate::proto::{LookupName, OpInfo};
 use crate::server::authenticator::{Authenticator, CertUnboxError};
 use crate::server::remote_manager::RemoteManager;
+use crate::server::transfer_receiver;
 use crate::types::message::{Direction, Message};
 use crate::types::remote::{RemoteConnectionError, RemoteState};
-use crate::types::transfer::{Transfer, TransferError, TransferState};
+use crate::types::transfer::{Transfer, TransferError, TransferKind, TransferState};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -470,6 +471,65 @@ impl RemoteWorker {
             .await?;
 
         self.remote_manager.add_message(&self.uuid, message).await?;
+
+        Ok(())
+    }
+
+    pub async fn accept_transfer<P: AsRef<Path>>(
+        &self,
+        transfer_uuid: &str,
+        destination: P,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let client = self.client.read().await;
+        let client = client.as_ref().ok_or("No client")?;
+        let mut client = client.clone();
+
+        let transfer = self
+            .remote_manager
+            .transfer(self.uuid.as_str(), transfer_uuid)
+            .await
+            .ok_or("Transfer not found")?;
+
+        let remote_timestamp = match transfer.kind {
+            TransferKind::Incoming {
+                destination: _,
+                remote_timestamp,
+            } => remote_timestamp,
+            TransferKind::Outgoing { source_paths: _ } => {
+                return Err("Cannot accept an outgoing transfer".into());
+            }
+        };
+
+        let stream = client
+            .start_transfer(OpInfo {
+                ident: self.server_fullname.clone(),
+                timestamp: remote_timestamp,
+                use_compression: false,
+                readable_name: String::default(),
+            })
+            .await?
+            .into_inner();
+
+        let destination = destination.as_ref().to_path_buf();
+
+        self.remote_manager
+            .update_transfer(&self.uuid, transfer_uuid, |t| {
+                t.state = TransferState::InProgress;
+                t.kind = TransferKind::Incoming {
+                    destination: destination.clone(),
+                    remote_timestamp,
+                };
+            })
+            .await?;
+
+        tokio::spawn(transfer_receiver::receive_stream(
+            self.remote_manager.clone(),
+            self.uuid.clone(),
+            transfer_uuid.to_string(),
+            stream,
+            destination,
+            self.cancellation_token.child_token(),
+        ));
 
         Ok(())
     }

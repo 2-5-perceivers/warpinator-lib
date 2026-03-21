@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -21,7 +22,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt};
 use tui::app::InputMode;
-use tui::app::{App, AppEvent};
+use tui::app::{App, AppEvent, Focus};
 use warpinator_lib::WarpinatorServer;
 use warpinator_lib::config::user::UserConfig;
 use warpinator_lib::remote_manager::RemoteManager;
@@ -243,10 +244,35 @@ async fn run(
                             }
                         }
 
+                        // Handle accept ('a') when focus is Transfers
+                        if key.code == KeyCode::Char('a') {
+                            if let Some(InputMode::FilePath) = app.input_mode {
+                                // let the normal enter handler manage file sending
+                            } else if app.focus == Focus::Transfers {
+                                if let Some(remote) = app.current_remote() {
+                                    if let Some(t) = app.current_transfers().get(app.selected_transfer) {
+                                        let remote_uuid = remote.uuid.clone();
+                                        let transfer_uuid = t.uuid.clone();
+                                        let rm = remote_manager.clone();
+                                        tokio::spawn(async move {
+                                            if let Some(worker) = rm.get_worker(&remote_uuid).await {
+                                                // Determine destination: WARPINATOR_DIR or current dir
+                                                let dest = std::env::var("WARPINATOR_DIR")
+                                                    .ok()
+                                                    .map(PathBuf::from)
+                                                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+                                                let _ = worker.accept_transfer(&transfer_uuid, dest).await;
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        }
+
                         if app.handle_key(key).is_quit() {
                             break;
                         }
-                    }
+                     }
                     Some(ev) => app.handle_event(ev),
                     None => break,
                 }

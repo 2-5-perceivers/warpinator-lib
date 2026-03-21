@@ -1,7 +1,8 @@
 pub mod authenticator;
 mod discovery;
 pub mod remote_manager;
-mod remote_worker;
+pub mod remote_worker;
+pub mod transfer_receiver;
 
 use crate::config::protocol::ProtocolConfig;
 use crate::config::user::UserConfig;
