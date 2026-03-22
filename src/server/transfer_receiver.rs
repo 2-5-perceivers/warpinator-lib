@@ -1,7 +1,8 @@
-use crate::proto::FileChunk;
+use crate::proto::{FileChunk, FileTime};
 use crate::remote_manager::RemoteManager;
 use crate::types::transfer::{TransferError, TransferState};
 use std::collections::VecDeque;
+use std::fs::FileTimes;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -40,6 +41,7 @@ impl MovingAverage {
 struct ReceiveState {
     current_path: Option<String>,
     current_file: Option<tokio::fs::File>,
+    current_file_mtime: Option<FileTime>,
     speed: MovingAverage,
     last_chunk_time: std::time::Instant,
 }
@@ -49,14 +51,24 @@ impl ReceiveState {
         Self {
             current_path: None,
             current_file: None,
+            current_file_mtime: None,
             speed: MovingAverage::new(30),
             last_chunk_time: std::time::Instant::now(),
         }
     }
 
     async fn close_current_file(&mut self) {
-        if let Some(mut file) = self.current_file.take() {
-            let _ = file.flush().await;
+        if let Some(file) = self.current_file.take() {
+            if let Some(time) = self.current_file_mtime.take() {
+                let std_file = file.into_std().await;
+                let system_time = std::time::UNIX_EPOCH
+                    + std::time::Duration::new(time.mtime, time.mtime_usec * 1000);
+                let times = FileTimes::new().set_modified(system_time);
+                let _ = tokio::task::spawn_blocking(move || std_file.set_times(times)).await;
+            } else {
+                let mut file = file;
+                let _ = file.flush().await;
+            }
         }
         self.current_path = None;
     }
@@ -107,6 +119,7 @@ async fn receive_stream_inner(
         if state.current_path.as_deref() != Some(&sanitized) {
             state.close_current_file().await;
             state.current_path = Some(sanitized.clone());
+            state.current_file_mtime = chunk.time.map(|t| t);
 
             if chunk.file_type == file_type::DIRECTORY as i32 {
                 tokio::fs::create_dir_all(&target_path).await.ok();
