@@ -1,23 +1,50 @@
 use crate::proto::{OpInfo, TransferOpRequest};
 use async_walkdir::WalkDir;
+use std::io::ErrorKind as IoErrorKind;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio_stream::StreamExt;
 
 #[derive(Error, Clone, Debug)]
 pub enum TransferError {
-    #[error("Connection was lost")]
+    #[error("Connection to remote was lost")]
     ConnectionLost,
-    #[error("Storage filled up")]
+    #[error("Not enough storage space")]
     StorageFull,
-    #[error("Processing of source files failed")]
+    #[error("Failed to process source files")]
     FailedToProcessFiles,
     #[error("Failed to start transfer: {0}")]
     FailedToStartTransfer(tonic::Status),
-    #[error("Remote tried to write outside of the destination folder")]
+    #[error("Received an unsafe file path from remote")]
     UnsafePath,
-    #[error("IO error during transfer")]
-    IoError,
+    #[error("Source files not found")]
+    FilesNotFound,
+    #[error("Permission denied writing to destination")]
+    PermissionDenied,
+    #[error("File too large for destination filesystem")]
+    FileTooLarge,
+    #[error("Filename is invalid for the destination filesystem")]
+    InvalidFilename,
+    #[error("Out of memory")]
+    OutOfMemory,
+    #[error("IO error during transfer: {0}")]
+    IoError(IoErrorKind),
+}
+
+impl From<IoErrorKind> for TransferError {
+    fn from(value: IoErrorKind) -> Self {
+        match value {
+            IoErrorKind::NotFound => TransferError::FilesNotFound,
+            IoErrorKind::PermissionDenied | IoErrorKind::ReadOnlyFilesystem => {
+                TransferError::PermissionDenied
+            }
+            IoErrorKind::StorageFull => TransferError::StorageFull,
+            IoErrorKind::FileTooLarge => TransferError::FileTooLarge,
+            IoErrorKind::InvalidFilename => TransferError::InvalidFilename,
+            IoErrorKind::OutOfMemory => TransferError::OutOfMemory,
+            e @ _ => TransferError::IoError(e),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

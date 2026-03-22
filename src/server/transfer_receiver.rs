@@ -2,12 +2,13 @@ use crate::proto::FileChunk;
 use crate::remote_manager::RemoteManager;
 use crate::types::transfer::{TransferError, TransferState};
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 use tracing::instrument;
 
+#[allow(unused)]
 mod file_type {
     pub const FILE: u8 = 1;
     pub const DIRECTORY: u8 = 2;
@@ -64,15 +65,20 @@ fn sanitize_path_component(name: &str) -> String {
     name.replace(['\\', '<', '>', '*', '|', '?', ':', '"'], "_")
 }
 
-#[instrument(skip(remote_manager, stream), level = "debug")]
-pub(crate) async fn receive_stream(
-    remote_manager: RemoteManager,
-    remote_uuid: String,
-    transfer_uuid: String,
-    mut stream: Streaming<FileChunk>,
-    destination: PathBuf,
-    cancellation_token: CancellationToken,
-) {
+/// Returns Ok(true) it was completed, Ok(false) if it was canceled, and Err(TransferError) it failed
+#[instrument(
+    skip(remote_manager, stream, cancellation_token),
+    level = "debug",
+    err(level = "warn")
+)]
+async fn receive_stream_inner(
+    remote_manager: &RemoteManager,
+    remote_uuid: &str,
+    transfer_uuid: &str,
+    stream: &mut Streaming<FileChunk>,
+    destination: &PathBuf,
+    cancellation_token: &CancellationToken,
+) -> Result<bool, TransferError> {
     let mut state = ReceiveState::new();
 
     loop {
@@ -80,15 +86,13 @@ pub(crate) async fn receive_stream(
             _ = cancellation_token.cancelled() => {
                 tracing::info!("Transfer cancelled via token");
                 state.close_current_file().await;
-                let _ = remote_manager.update_transfer(&remote_uuid, &transfer_uuid, |t| {
-                    t.state = TransferState::Canceled;
-                }).await;
-                return;
+                return Ok(false);
             }
             msg_result = stream.message() => {
                 match msg_result {
                     Ok(Some(chunk)) => {
-                        if chunk.file_type == file_type::SYMLINK as i32 {
+
+        if chunk.file_type == file_type::SYMLINK as i32 {
             continue;
         }
 
@@ -97,14 +101,7 @@ pub(crate) async fn receive_stream(
 
         // Check that the target path is within the destination directory
         if sanitized.contains("..") && !target_path.starts_with(&destination) {
-            tracing::warn!("Path traversal attempt detected, aborting transfer");
-            remote_manager
-                .update_transfer(&remote_uuid, &transfer_uuid, |t| {
-                    t.state = TransferState::Failed(TransferError::UnsafePath);
-                })
-                .await
-                .ok();
-            return;
+            return Err(TransferError::UnsafePath);
         }
 
         if state.current_path.as_deref() != Some(&sanitized) {
@@ -122,24 +119,7 @@ pub(crate) async fn receive_stream(
 
             match tokio::fs::File::create(&target_path).await {
                 Ok(file) => state.current_file = Some(file),
-                Err(e) if e.kind() == std::io::ErrorKind::StorageFull => {
-                    remote_manager
-                        .update_transfer(&remote_uuid, &transfer_uuid, |t| {
-                            t.state = TransferState::Failed(TransferError::StorageFull);
-                        })
-                        .await
-                        .ok();
-                    return;
-                }
-                Err(_) => {
-                    remote_manager
-                        .update_transfer(&remote_uuid, &transfer_uuid, |t| {
-                            t.state = TransferState::Failed(TransferError::IoError);
-                        })
-                        .await
-                        .ok();
-                    return;
-                }
+                Err(e) => return Err(e.kind().into()),
             }
         }
 
@@ -149,14 +129,7 @@ pub(crate) async fn receive_stream(
             let chunk_len = data.len() as u64;
 
             if let Err(e) = file.write_all(&data).await {
-                tracing::warn!("Write error: {}", e);
-                remote_manager
-                    .update_transfer(&remote_uuid, &transfer_uuid, |t| {
-                        t.state = TransferState::Failed(TransferError::StorageFull);
-                    })
-                    .await
-                    .ok();
-                return;
+                return Err(e.kind().into());
             }
 
             // Progress
@@ -173,19 +146,15 @@ pub(crate) async fn receive_stream(
                 .await
                 .ok();
         }
+
                     }
                     Ok(None) => {
                         // Stream finished successfully
                         break;
                     }
-                    Err(e) => {
-                        // Network error, dropped connection, etc.
-                        tracing::error!("Stream error during transfer: {}", e);
+                    Err(_) => {
                         state.close_current_file().await;
-                        let _ = remote_manager.update_transfer(&remote_uuid, &transfer_uuid, |t| {
-                            t.state = TransferState::Failed(TransferError::ConnectionLost);
-                        }).await;
-                        return;
+                        return Err(TransferError::ConnectionLost);
                     }
                 }
             }
@@ -194,9 +163,36 @@ pub(crate) async fn receive_stream(
 
     // Done
     state.close_current_file().await;
+    Ok(true)
+}
+
+pub(crate) async fn receive_stream(
+    remote_manager: RemoteManager,
+    remote_uuid: String,
+    transfer_uuid: String,
+    mut stream: Streaming<FileChunk>,
+    destination: PathBuf,
+    cancellation_token: CancellationToken,
+) {
+    let result = receive_stream_inner(
+        &remote_manager,
+        &remote_uuid,
+        &transfer_uuid,
+        &mut stream,
+        &destination,
+        &cancellation_token,
+    )
+    .await;
+
+    let final_state = match result {
+        Ok(true) => TransferState::Completed,
+        Ok(false) => TransferState::Canceled,
+        Err(e) => TransferState::Failed(e),
+    };
+
     remote_manager
         .update_transfer(&remote_uuid, &transfer_uuid, |t| {
-            t.state = TransferState::Completed;
+            t.state = final_state;
             t.bytes_per_second = 0;
         })
         .await
