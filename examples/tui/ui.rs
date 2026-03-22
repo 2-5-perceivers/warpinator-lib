@@ -311,6 +311,9 @@ fn draw_statusbar(f: &mut Frame, app: &App, area: Rect) {
         Some(InputMode::FilePath) => {
             format!(" Send file: {}_", app.input_buf)
         }
+        Some(InputMode::AcceptDestination) => {
+            format!(" Accept to: {}_  (Enter to confirm, Esc to cancel)", app.input_buf)
+        }
         Some(InputMode::Message) => {
             format!(" Message: {}_", app.input_buf)
         }

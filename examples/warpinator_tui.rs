@@ -12,7 +12,6 @@ use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -202,75 +201,93 @@ async fn run(
             ev = rx.recv() => {
                 match ev {
                     Some(AppEvent::Terminal(CEvent::Key(key))) => {
-                        #[cfg(feature = "messaging")]
-                        {
-                            if key.code == KeyCode::Enter {
-                                if let Some(InputMode::Message) = app.input_mode {
-                                    if let Some(remote) = app.current_remote() {
-                                        let msg = app.input_buf.clone();
-                                        let remote_uuid = remote.uuid.clone();
-                                        let rm = remote_manager.clone();
-                                        tokio::spawn(async move {
-                                            if let Some(worker) = rm.get_worker(&remote_uuid).await {
-                                                let _ = worker.send_message(&msg).await;
-                                            }
-                                        });
-                                    }
-                                }
-                            }
-                        }
+                        let mut handled = false;
 
-                        // Handle file path send (split by ';' into multiple paths)
                         if key.code == KeyCode::Enter {
-                            if let Some(InputMode::FilePath) = app.input_mode {
-                                if let Some(remote) = app.current_remote() {
-                                    let value = app.input_buf.clone();
-                                    let remote_uuid = remote.uuid.clone();
-                                    let rm = remote_manager.clone();
-                                    tokio::spawn(async move {
-                                        if let Some(worker) = rm.get_worker(&remote_uuid).await {
-                                            let paths: Vec<std::path::PathBuf> = value
-                                                .split(';')
-                                                .map(|s| s.trim())
-                                                .filter(|s| !s.is_empty())
-                                                .map(|s| std::path::PathBuf::from(s))
-                                                .collect();
-                                            if !paths.is_empty() {
-                                                let _ = worker.send_transfer_request(paths).await;
-                                            }
-                                        }
-                                    });
+                            if let Some((captured_mode, captured_buf)) = app.consume_input() {
+                                if app.handle_key(key).is_quit() {
+                                    break;
                                 }
-                            }
-                        }
 
-                        // Handle accept ('a') when focus is Transfers
-                        if key.code == KeyCode::Char('a') {
-                            if let Some(InputMode::FilePath) = app.input_mode {
-                                // let the normal enter handler manage file sending
-                            } else if app.focus == Focus::Transfers {
-                                if let Some(remote) = app.current_remote() {
-                                    if let Some(t) = app.current_transfers().get(app.selected_transfer) {
-                                        let remote_uuid = remote.uuid.clone();
-                                        let transfer_uuid = t.uuid.clone();
-                                        let rm = remote_manager.clone();
-                                        tokio::spawn(async move {
-                                            if let Some(worker) = rm.get_worker(&remote_uuid).await {
-                                                // Determine destination: WARPINATOR_DIR or current dir
-                                                let dest = std::env::var("WARPINATOR_DIR")
-                                                    .ok()
-                                                    .map(PathBuf::from)
-                                                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-                                                let _ = worker.accept_transfer(&transfer_uuid, dest).await;
-                                            }
-                                        });
+                                match captured_mode {
+                                    InputMode::Message => {
+                                        if let Some(remote) = app.current_remote() {
+                                            let remote_uuid = remote.uuid.clone();
+                                            let msg = captured_buf;
+                                            let rm = remote_manager.clone();
+                                            tokio::spawn(async move {
+                                                if let Some(worker) = rm.get_worker(&remote_uuid).await {
+                                                    let _ = worker.send_message(&msg).await;
+                                                }
+                                            });
+                                        }
+                                        handled = true;
+                                    }
+                                    InputMode::FilePath => {
+                                        if let Some(remote) = app.current_remote() {
+                                            let value = captured_buf;
+                                            let remote_uuid = remote.uuid.clone();
+                                            let rm = remote_manager.clone();
+                                            tokio::spawn(async move {
+                                                if let Some(worker) = rm.get_worker(&remote_uuid).await {
+                                                    let paths: Vec<std::path::PathBuf> = value
+                                                        .split(';')
+                                                        .map(|s| s.trim())
+                                                        .filter(|s| !s.is_empty())
+                                                        .map(|s| std::path::PathBuf::from(s))
+                                                        .collect();
+                                                    if !paths.is_empty() {
+                                                        let _ = worker.send_transfer_request(paths).await;
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        handled = true;
+                                    }
+                                    InputMode::AcceptDestination => {
+                                        if let Some((remote_uuid, transfer_uuid)) = app.pending_accept.take() {
+                                            let value = captured_buf;
+                                            let rm = remote_manager.clone();
+                                            tokio::spawn(async move {
+                                                if let Some(worker) = rm.get_worker(&remote_uuid).await {
+                                                    let dest = std::path::PathBuf::from(value);
+                                                    let _ = worker.accept_transfer(&transfer_uuid, dest).await;
+                                                }
+                                            });
+                                        }
+                                        handled = true;
                                     }
                                 }
                             }
                         }
 
-                        if app.handle_key(key).is_quit() {
-                            break;
+                        if key.code == KeyCode::Char('a') {
+                            if app.input_mode.is_none() && app.focus == Focus::Transfers {
+                                if let Some((remote_uuid, transfer_uuid)) = (|| {
+                                    if let Some(remote) = app.current_remote() {
+                                        if let Some(t) = app.current_transfers().get(app.selected_transfer) {
+                                            return Some((remote.uuid.clone(), t.uuid.clone()));
+                                        }
+                                    }
+                                    None
+                                })() {
+                                    let dest = std::env::var("WARPINATOR_DIR").ok().unwrap_or_else(|| {
+                                        env::current_dir()
+                                            .map(|p| p.to_string_lossy().to_string())
+                                            .unwrap_or_else(|_| ".".to_string())
+                                    });
+                                    app.input_mode = Some(InputMode::AcceptDestination);
+                                    app.input_buf = dest;
+                                    app.pending_accept = Some((remote_uuid, transfer_uuid));
+                                    handled = true;
+                                }
+                            }
+                        }
+
+                        if !handled {
+                            if app.handle_key(key).is_quit() {
+                                break;
+                            }
                         }
                      }
                     Some(ev) => app.handle_event(ev),

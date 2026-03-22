@@ -58,6 +58,7 @@ pub enum Focus {
 #[derive(Debug, Clone)]
 pub enum InputMode {
     FilePath,
+    AcceptDestination,
     Message,
 }
 
@@ -83,6 +84,9 @@ pub struct App {
     pub log: VecDeque<String>,
     // Cache to throttle UI updates for transfer stats (to reduce flicker)
     pub transfer_display: HashMap<String, TransferDisplay>,
+    // When the user starts an accept flow we store (remote_uuid, transfer_uuid)
+    // here until they confirm or cancel.
+    pub pending_accept: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +108,7 @@ impl App {
             input_buf: String::new(),
             log: VecDeque::with_capacity(200),
             transfer_display: HashMap::new(),
+            pending_accept: None,
         }
     }
 
@@ -229,22 +234,22 @@ impl App {
                 }
             }
             KeyCode::Char('a') => {
-                if let Some(t) = self.current_transfers().get(self.selected_transfer) {
-                    // TODO: rm.get_worker(remote_uuid).accept_transfer(&t.uuid)
+                if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
+                    // TODO: rm.get_worker(remote_uuid).accept_transfer(&_t.uuid)
                 }
             }
             KeyCode::Char('r') => {
-                if let Some(t) = self.current_transfers().get(self.selected_transfer) {
-                    // TODO: rm.get_worker(remote_uuid).reject_transfer(&t.uuid)
+                if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
+                    // TODO: rm.get_worker(remote_uuid).reject_transfer(&_t.uuid)
                 }
             }
             KeyCode::Char('p') => {
-                if let Some(t) = self.current_transfers().get(self.selected_transfer) {
+                if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
                     // TODO: control channel on TransferKind::Outgoing
                 }
             }
             KeyCode::Char('x') => {
-                if let Some(t) = self.current_transfers().get(self.selected_transfer) {
+                if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
                     // TODO: control channel on TransferKind::Outgoing
                 }
             }
@@ -254,11 +259,22 @@ impl App {
         Action::None
     }
 
+    pub fn consume_input(&mut self) -> Option<(InputMode, String)> {
+        if self.input_mode.is_some() {
+            let mode = self.input_mode.take().unwrap();
+            let buf = std::mem::take(&mut self.input_buf);
+            return Some((mode, buf));
+        }
+        None
+    }
+
     fn handle_input_key(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => {
                 self.input_mode = None;
                 self.input_buf.clear();
+                // cancel any pending accept
+                self.pending_accept = None;
             }
             KeyCode::Enter => {
                 let value = std::mem::take(&mut self.input_buf);
@@ -268,6 +284,10 @@ impl App {
                             self.log(format!("send '{}' -> {}", value, remote.uuid));
                             // TODO: rm.get_worker(&remote.uuid).send_file(PathBuf::from(value))
                         }
+                    }
+                    Some(InputMode::AcceptDestination) => {
+                        self.pending_accept = None;
+                        self.log(format!("accept dest '{}'", value));
                     }
                     Some(InputMode::Message) => {
                         if let Some(remote) = self.current_remote() {
