@@ -171,27 +171,16 @@ fn draw_transfers(f: &mut Frame, app: &App, area: Rect) {
             // remaining)
             let stats = match transfer.state {
                 TransferState::InProgress => {
-                    // Format speed with a single decimal and human unit to reduce flicker
-                    let speed_val = disp_bytes_per_sec as f64;
-                    let speed = if speed_val >= 1024.0 * 1024.0 {
-                        format!("{:.1} MiB", speed_val / (1024.0 * 1024.0))
-                    } else if speed_val >= 1024.0 {
-                        format!("{:.1} KiB", speed_val / 1024.0)
-                    } else {
-                        format!("{} B", disp_bytes_per_sec)
-                    };
+                    let speed = format!("{}/s", ByteSize(disp_bytes_per_sec));
 
                     let remaining_str = if disp_bytes_per_sec > 0 {
                         let remaining = transfer.total_bytes.saturating_sub(disp_bytes_transferred);
-                        let mut secs = remaining / disp_bytes_per_sec.max(1);
-                        // round ETA to nearest 5 seconds to avoid rapid flicker
-                        let round_to = 5;
-                        secs = ((secs + (round_to / 2)) / round_to) * round_to;
+                        let secs = remaining / disp_bytes_per_sec.max(1);
                         fmt_seconds(secs)
                     } else {
                         "--s".to_string()
                     };
-                    format!("({} /s, {} remaining)", speed, remaining_str)
+                    format!("({}, {} remaining)", speed, remaining_str)
                 }
                 _ => format!("({})", ByteSize(transfer.total_bytes).to_string()),
             };
