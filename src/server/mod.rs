@@ -2,7 +2,7 @@ pub mod authenticator;
 mod discovery;
 pub mod remote_manager;
 pub mod remote_worker;
-pub mod transfer_receiver;
+pub mod transfers;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;

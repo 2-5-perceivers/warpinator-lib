@@ -12,9 +12,10 @@ use crate::proto::{
     TextMessage, TransferOpRequest, VoidType, warp_server::Warp,
 };
 use crate::server::remote_manager::{RemoteManager, WarpEvent};
+use crate::server::transfers::transfer_sender;
 use crate::types::message::Message;
 use crate::types::remote::RemoteState;
-use crate::types::transfer::Transfer;
+use crate::types::transfer::{Transfer, TransferKind, TransferState};
 
 const AVATAR_CHUNK_SIZE: usize = 1024 * 64; // 64KB
 
@@ -186,8 +187,38 @@ impl Warp for WarpServer {
         &self,
         request: Request<OpInfo>,
     ) -> Result<Response<Self::StartTransferStream>, Status> {
-        tracing::info!("[Warp] start_transfer ident={}", request.into_inner().ident);
-        let (_, rx) = tokio::sync::mpsc::channel(1);
+        let req = request.into_inner();
+
+        let transfer = self
+            .remote_manager
+            .transfer_by_timestamp(&req.ident, req.timestamp)
+            .await
+            .ok_or_else(|| Status::not_found("Transfer not found"))?;
+
+        let source_paths = match &transfer.kind {
+            TransferKind::Outgoing { source_paths } => source_paths.clone(),
+            TransferKind::Incoming { .. } => {
+                return Err(Status::invalid_argument("Cannot start an incoming transfer"));
+            }
+        };
+
+        self.remote_manager
+            .update_transfer(&transfer.remote_uuid, &transfer.uuid, |t| {
+                t.state = TransferState::InProgress;
+            })
+            .await
+            .map_err(|_| Status::internal("Failed to update transfer state"))?;
+
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+
+        tokio::spawn(transfer_sender::send_stream(
+            self.remote_manager.clone(),
+            transfer.remote_uuid.clone(),
+            transfer.uuid.clone(),
+            source_paths,
+            tx,
+        ));
+
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 

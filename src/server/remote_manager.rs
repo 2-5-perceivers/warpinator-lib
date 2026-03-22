@@ -233,6 +233,19 @@ impl RemoteManager {
             .and_then(|r| r.transfers.iter().find(|t| t.uuid == transfer_uuid).cloned())
     }
 
+    pub async fn transfer_by_timestamp(
+        &self,
+        remote_uuid: &str,
+        transfer_timestamp: u64,
+    ) -> Option<Transfer> {
+        self.inner
+            .remotes
+            .read()
+            .await
+            .get(remote_uuid)
+            .and_then(|r| r.transfers.iter().find(|t| t.timestamp == transfer_timestamp).cloned())
+    }
+
     pub async fn transfers(&self, remote_uuid: &str) -> Option<Vec<Transfer>> {
         self.inner.remotes.read().await.get(remote_uuid).map(|r| r.transfers.clone())
     }

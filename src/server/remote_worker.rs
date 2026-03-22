@@ -17,7 +17,7 @@ use crate::proto::warp_client::WarpClient;
 use crate::proto::{LookupName, OpInfo};
 use crate::server::authenticator::{Authenticator, CertUnboxError};
 use crate::server::remote_manager::RemoteManager;
-use crate::server::transfer_receiver;
+use crate::server::transfers::transfer_receiver;
 use crate::types::message::{Direction, Message};
 use crate::types::remote::{RemoteConnectionError, RemoteState};
 use crate::types::transfer::{Transfer, TransferError, TransferKind, TransferState};
@@ -143,10 +143,7 @@ impl RemoteWorker {
                         }
                     }
                     RemoteState::Error(ref e) => {
-                        if matches!(
-                            e,
-                            crate::types::remote::RemoteConnectionError::GroupCodeMismatch
-                        ) {
+                        if matches!(e, RemoteConnectionError::GroupCodeMismatch) {
                             // Group code mismatch is not retryable, stay in error state until
                             // manual intervention
                             break;

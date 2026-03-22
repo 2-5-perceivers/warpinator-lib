@@ -9,53 +9,14 @@ use tracing::instrument;
 
 use crate::proto::{FileChunk, FileTime};
 use crate::remote_manager::RemoteManager;
+use crate::server::transfers::{FileType, MovingAverageCalculator};
 use crate::types::transfer::{TransferError, TransferState};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-enum FileType {
-    File = 1,
-    Directory = 2,
-    Symlink = 3,
-}
-
-impl TryFrom<i32> for FileType {
-    type Error = ();
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::File),
-            2 => Ok(Self::Directory),
-            3 => Ok(Self::Symlink),
-            _ => Err(()),
-        }
-    }
-}
-
-struct MovingAverage {
-    samples: VecDeque<u64>,
-    window: usize,
-}
-
-impl MovingAverage {
-    fn new(window: usize) -> Self {
-        Self { samples: VecDeque::with_capacity(window), window }
-    }
-
-    fn push(&mut self, value: u64) -> u64 {
-        if self.samples.len() == self.window {
-            self.samples.pop_front();
-        }
-        self.samples.push_back(value);
-        self.samples.iter().sum::<u64>() / self.samples.len() as u64
-    }
-}
 
 struct ReceiveState {
     current_path: Option<String>,
     current_file: Option<tokio::fs::File>,
     current_file_mtime: Option<FileTime>,
-    speed: MovingAverage,
+    speed: MovingAverageCalculator,
     last_chunk_time: std::time::Instant,
 }
 
@@ -65,7 +26,7 @@ impl ReceiveState {
             current_path: None,
             current_file: None,
             current_file_mtime: None,
-            speed: MovingAverage::new(30),
+            speed: MovingAverageCalculator::new(30),
             last_chunk_time: std::time::Instant::now(),
         }
     }
@@ -143,8 +104,7 @@ async fn process_chunk(
 
         // Progress
         let elapsed = state.last_chunk_time.elapsed().as_secs_f64().max(0.001);
-        let bps = (chunk_len as f64 / elapsed) as u64;
-        let avg_bps = state.speed.push(bps);
+        let avg_bps = state.speed.push(chunk_len, elapsed);
         state.last_chunk_time = std::time::Instant::now();
 
         remote_manager
