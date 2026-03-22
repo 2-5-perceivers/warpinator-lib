@@ -129,8 +129,18 @@ impl Authenticator {
 
         let spki = SubjectPublicKeyInfoOwned::from_key(private_key.to_public_key())?;
 
-        let mut builder =
-            CertificateBuilder::new(Profile::Root, serial, validity, subject, spki, &signing_key)?;
+        let mut builder = CertificateBuilder::new(
+            Profile::Leaf {
+                issuer: subject.clone(),
+                enable_key_agreement: false,
+                enable_key_encipherment: true,
+            },
+            serial,
+            validity,
+            subject,
+            spki,
+            &signing_key,
+        )?;
 
         // Add SAN extension with IP
         let san = SubjectAltName(vec![match local_ip {
