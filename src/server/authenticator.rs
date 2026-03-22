@@ -1,23 +1,23 @@
-use crypto_secretbox::aead::Aead;
-use crypto_secretbox::{AeadCore, Key, Nonce, XSalsa20Poly1305, aead::KeyInit};
-use rsa::pkcs1::der::asn1::OctetString;
-use rsa::rand_core::OsRng;
-use rsa::{RsaPrivateKey, pkcs8::EncodePrivateKey};
-use sha2::{Digest, Sha256};
 use std::net::IpAddr;
 use std::str::FromStr;
+
+use crypto_secretbox::aead::{Aead, KeyInit};
+use crypto_secretbox::{AeadCore, Key, Nonce, XSalsa20Poly1305};
+use rsa::RsaPrivateKey;
+use rsa::pkcs1::der::asn1::OctetString;
+use rsa::pkcs8::EncodePrivateKey;
+use rsa::rand_core::OsRng;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tracing::instrument;
-use x509_cert::builder::{Builder, Profile};
+use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+use x509_cert::der::EncodePem;
+use x509_cert::ext::pkix::SubjectAltName;
+use x509_cert::ext::pkix::name::GeneralName;
 use x509_cert::name::Name;
-use x509_cert::{
-    builder::CertificateBuilder,
-    der::EncodePem,
-    ext::pkix::{SubjectAltName, name::GeneralName},
-    serial_number::SerialNumber,
-    spki::SubjectPublicKeyInfoOwned,
-    time::Validity,
-};
+use x509_cert::serial_number::SerialNumber;
+use x509_cert::spki::SubjectPublicKeyInfoOwned;
+use x509_cert::time::Validity;
 
 #[derive(Error, Debug)]
 pub enum CertUnboxError {
@@ -49,11 +49,7 @@ impl Authenticator {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let (cert_pem, private_key_pem) = Self::generate_cert(hostname, local_ip)?;
 
-        Ok(Self {
-            group_code,
-            cert_pem,
-            private_key_pem,
-        })
+        Ok(Self { group_code, cert_pem, private_key_pem })
     }
 
     /// Returns the cert boxed with the group code key, ready to send to peers
@@ -88,9 +84,8 @@ impl Authenticator {
         let nonce = Nonce::from_slice(&boxed[..24]);
         let ciphertext = &boxed[24..];
 
-        let cert = cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| CertUnboxError::DecryptionFailed)?;
+        let cert =
+            cipher.decrypt(nonce, ciphertext).map_err(|_| CertUnboxError::DecryptionFailed)?;
 
         Ok(cert)
     }
@@ -122,15 +117,10 @@ impl Authenticator {
         let private_key = RsaPrivateKey::new(&mut rng, 2048)?;
         let signing_key = rsa::pkcs1v15::SigningKey::<Sha256>::new(private_key.clone());
 
-        let sanitized_hostname = hostname
-            .replace(|c: char| !c.is_ascii_alphanumeric(), "")
-            .trim()
-            .to_string();
-        let hostname = if sanitized_hostname.is_empty() {
-            "warpinator"
-        } else {
-            &sanitized_hostname
-        };
+        let sanitized_hostname =
+            hostname.replace(|c: char| !c.is_ascii_alphanumeric(), "").trim().to_string();
+        let hostname =
+            if sanitized_hostname.is_empty() { "warpinator" } else { &sanitized_hostname };
 
         let subject = Name::from_str(&format!("CN={}", hostname))?;
 
@@ -152,10 +142,7 @@ impl Authenticator {
         let cert = builder.build()?;
 
         let cert_pem = cert.to_pem(Default::default())?.into_bytes();
-        let private_key_pem = private_key
-            .to_pkcs8_pem(Default::default())?
-            .as_bytes()
-            .to_vec();
+        let private_key_pem = private_key.to_pkcs8_pem(Default::default())?.as_bytes().to_vec();
 
         tracing::info!("Generated certificates");
 

@@ -1,8 +1,10 @@
+use std::net::IpAddr;
+
+use thiserror::Error;
+
 #[cfg(feature = "messaging")]
 use crate::types::message::Message;
 use crate::types::transfer::Transfer;
-use std::net::IpAddr;
-use thiserror::Error;
 
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
 pub enum RemoteConnectionError {
@@ -44,7 +46,8 @@ pub struct Remote {
     pub messages: Vec<Message>,
     pub transfers: Vec<Transfer>,
 
-    /// Whether the remote's service is static (i.e. registered) or dynamic (i.e. discovered on the network)
+    /// Whether the remote's service is static (i.e. registered) or dynamic
+    /// (i.e. discovered on the network)
     pub service_static: bool,
     /// Whether the remote's mdns service is currently available
     pub service_available: bool,

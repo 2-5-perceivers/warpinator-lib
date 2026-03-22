@@ -1,16 +1,17 @@
-use crate::proto::{
-    RegRequest, RegResponse, ServiceRegistration, warp_registration_server::WarpRegistration,
-};
-use crate::server::authenticator::Authenticator;
-use crate::server::remote_manager::RemoteManager;
-use crate::types::remote::{Remote, RemoteState};
-use base64::{Engine, engine::general_purpose::STANDARD};
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use tonic::{Request, Response, Status};
-use tracing::field;
-use tracing::instrument;
+use tracing::{field, instrument};
+
+use crate::proto::warp_registration_server::WarpRegistration;
+use crate::proto::{RegRequest, RegResponse, ServiceRegistration};
+use crate::server::authenticator::Authenticator;
+use crate::server::remote_manager::RemoteManager;
+use crate::types::remote::{Remote, RemoteState};
 
 #[derive(Debug)]
 pub struct RegistrationServer {
@@ -25,11 +26,7 @@ impl RegistrationServer {
         remote_manager: RemoteManager,
         reg_service_message: ServiceRegistration,
     ) -> Self {
-        Self {
-            authenticator,
-            remote_manager,
-            reg_service_message,
-        }
+        Self { authenticator, remote_manager, reg_service_message }
     }
 }
 
@@ -109,10 +106,8 @@ impl WarpRegistration for RegistrationServer {
                 tracing::warn!("Attempted registration from already connected remote",);
             }
             Some(remote) => {
-                let needs_reconnect = matches!(
-                    remote.state,
-                    RemoteState::Disconnected | RemoteState::Error(_)
-                );
+                let needs_reconnect =
+                    matches!(remote.state, RemoteState::Disconnected | RemoteState::Error(_));
 
                 let ip = IpAddr::from_str(&req.ip)
                     .map_err(|e| Status::invalid_argument(e.to_string()))?;

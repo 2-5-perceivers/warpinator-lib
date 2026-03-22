@@ -1,19 +1,35 @@
-use crate::proto::{FileChunk, FileTime};
-use crate::remote_manager::RemoteManager;
-use crate::types::transfer::{TransferError, TransferState};
 use std::collections::VecDeque;
 use std::fs::FileTimes;
 use std::path::PathBuf;
+
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 use tonic::Streaming;
 use tracing::instrument;
 
-#[allow(unused)]
-mod file_type {
-    pub const FILE: u8 = 1;
-    pub const DIRECTORY: u8 = 2;
-    pub const SYMLINK: u8 = 3;
+use crate::proto::{FileChunk, FileTime};
+use crate::remote_manager::RemoteManager;
+use crate::types::transfer::{TransferError, TransferState};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+enum FileType {
+    File = 1,
+    Directory = 2,
+    Symlink = 3,
+}
+
+impl TryFrom<i32> for FileType {
+    type Error = ();
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::File),
+            2 => Ok(Self::Directory),
+            3 => Ok(Self::Symlink),
+            _ => Err(()),
+        }
+    }
 }
 
 struct MovingAverage {
@@ -23,10 +39,7 @@ struct MovingAverage {
 
 impl MovingAverage {
     fn new(window: usize) -> Self {
-        Self {
-            samples: VecDeque::with_capacity(window),
-            window,
-        }
+        Self { samples: VecDeque::with_capacity(window), window }
     }
 
     fn push(&mut self, value: u64) -> u64 {
@@ -57,7 +70,7 @@ impl ReceiveState {
         }
     }
 
-    async fn close_current_file(&mut self) {
+    async fn finalize_current_file(&mut self) {
         if let Some(file) = self.current_file.take() {
             if let Some(time) = self.current_file_mtime.take() {
                 let std_file = file.into_std().await;
@@ -77,7 +90,77 @@ fn sanitize_path_component(name: &str) -> String {
     name.replace(['\\', '<', '>', '*', '|', '?', ':', '"'], "_")
 }
 
-/// Returns Ok(true) it was completed, Ok(false) if it was canceled, and Err(TransferError) it failed
+async fn process_chunk(
+    chunk: FileChunk,
+    state: &mut ReceiveState,
+    destination: &PathBuf,
+    remote_manager: &RemoteManager,
+    remote_uuid: &str,
+    transfer_uuid: &str,
+) -> Result<(), TransferError> {
+    let file_type = FileType::try_from(chunk.file_type).unwrap_or(FileType::File);
+
+    if file_type == FileType::Symlink {
+        return Ok(());
+    }
+
+    let sanitized = sanitize_path_component(&chunk.relative_path);
+    let target_path = destination.join(&sanitized);
+
+    // Check that the target path is within the destination directory
+    if sanitized.contains("..") && !target_path.starts_with(&destination) {
+        return Err(TransferError::UnsafePath);
+    }
+
+    if state.current_path.as_deref() != Some(&sanitized) {
+        state.finalize_current_file().await;
+        state.current_path = Some(sanitized.clone());
+        state.current_file_mtime = chunk.time.map(|t| t);
+
+        if file_type == FileType::Directory {
+            tokio::fs::create_dir_all(&target_path).await.ok();
+            return Ok(());
+        }
+
+        if let Some(parent) = target_path.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+
+        match tokio::fs::File::create(&target_path).await {
+            Ok(file) => state.current_file = Some(file),
+            Err(e) => return Err(e.kind().into()),
+        }
+    }
+
+    // Write chunk
+    if let Some(file) = state.current_file.as_mut() {
+        let data = chunk.chunk;
+        let chunk_len = data.len() as u64;
+
+        if let Err(e) = file.write_all(&data).await {
+            return Err(e.kind().into());
+        }
+
+        // Progress
+        let elapsed = state.last_chunk_time.elapsed().as_secs_f64().max(0.001);
+        let bps = (chunk_len as f64 / elapsed) as u64;
+        let avg_bps = state.speed.push(bps);
+        state.last_chunk_time = std::time::Instant::now();
+
+        remote_manager
+            .update_transfer(&remote_uuid, &transfer_uuid, |t| {
+                t.bytes_transferred += chunk_len;
+                t.bytes_per_second = avg_bps;
+            })
+            .await
+            .ok();
+    }
+
+    Ok(())
+}
+
+/// Returns Ok(true) it was completed, Ok(false) if it was canceled, and
+/// Err(TransferError) it failed
 #[instrument(
     skip(remote_manager, stream, cancellation_token),
     level = "debug",
@@ -97,76 +180,20 @@ async fn receive_stream_inner(
         tokio::select! {
             _ = cancellation_token.cancelled() => {
                 tracing::info!("Transfer cancelled via token");
-                state.close_current_file().await;
+                state.finalize_current_file().await;
                 return Ok(false);
             }
             msg_result = stream.message() => {
                 match msg_result {
                     Ok(Some(chunk)) => {
-
-        if chunk.file_type == file_type::SYMLINK as i32 {
-            continue;
-        }
-
-        let sanitized = sanitize_path_component(&chunk.relative_path);
-        let target_path = destination.join(&sanitized);
-
-        // Check that the target path is within the destination directory
-        if sanitized.contains("..") && !target_path.starts_with(&destination) {
-            return Err(TransferError::UnsafePath);
-        }
-
-        if state.current_path.as_deref() != Some(&sanitized) {
-            state.close_current_file().await;
-            state.current_path = Some(sanitized.clone());
-            state.current_file_mtime = chunk.time.map(|t| t);
-
-            if chunk.file_type == file_type::DIRECTORY as i32 {
-                tokio::fs::create_dir_all(&target_path).await.ok();
-                continue;
-            }
-
-            if let Some(parent) = target_path.parent() {
-                tokio::fs::create_dir_all(parent).await.ok();
-            }
-
-            match tokio::fs::File::create(&target_path).await {
-                Ok(file) => state.current_file = Some(file),
-                Err(e) => return Err(e.kind().into()),
-            }
-        }
-
-        // Write chunk
-        if let Some(file) = state.current_file.as_mut() {
-            let data = chunk.chunk;
-            let chunk_len = data.len() as u64;
-
-            if let Err(e) = file.write_all(&data).await {
-                return Err(e.kind().into());
-            }
-
-            // Progress
-            let elapsed = state.last_chunk_time.elapsed().as_secs_f64().max(0.001);
-            let bps = (chunk_len as f64 / elapsed) as u64;
-            let avg_bps = state.speed.push(bps);
-            state.last_chunk_time = std::time::Instant::now();
-
-            remote_manager
-                .update_transfer(&remote_uuid, &transfer_uuid, |t| {
-                    t.bytes_transferred += chunk_len;
-                    t.bytes_per_second = avg_bps;
-                })
-                .await
-                .ok();
-        }
-
+                        process_chunk(chunk, &mut state, destination, remote_manager, remote_uuid, transfer_uuid).await?;
                     }
                     Ok(None) => {
                         // Stream finished successfully
                         break;
                     }
                     Err(_) => {
-                        state.close_current_file().await;
+                        state.finalize_current_file().await;
                         return Err(TransferError::ConnectionLost);
                     }
                 }
@@ -175,7 +202,7 @@ async fn receive_stream_inner(
     }
 
     // Done
-    state.close_current_file().await;
+    state.finalize_current_file().await;
     Ok(true)
 }
 

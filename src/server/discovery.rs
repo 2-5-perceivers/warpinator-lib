@@ -1,10 +1,10 @@
+use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent};
+use thiserror::Error;
+use tracing::{field, instrument};
+
 use crate::server::remote_manager;
 use crate::server::remote_worker::ConnectRemoteError;
 use crate::types::remote::{Remote, RemoteState};
-use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent};
-use thiserror::Error;
-use tracing::field;
-use tracing::instrument;
 
 #[derive(Error, Debug)]
 enum DiscoveryNewServiceError {
@@ -34,11 +34,7 @@ impl DiscoveryService {
         mdns: ServiceDaemon,
         service_domain: String,
     ) -> Self {
-        Self {
-            remote_manager,
-            mdns,
-            service_domain,
-        }
+        Self { remote_manager, mdns, service_domain }
     }
 
     #[instrument(skip(self), err)]
@@ -95,9 +91,8 @@ impl DiscoveryService {
             .iter()
             .find(|addr| addr.is_ipv6())
             .or_else(|| addresses.iter().find(|addr| addr.is_ipv4()));
-        let address = address_option
-            .ok_or(DiscoveryNewServiceError::NoValidIpAddress)?
-            .to_ip_addr();
+        let address =
+            address_option.ok_or(DiscoveryNewServiceError::NoValidIpAddress)?.to_ip_addr();
 
         span.record("address", address.to_string());
 
@@ -106,9 +101,7 @@ impl DiscoveryService {
 
         let auth_port_str = txt_properties
             .get("auth-port")
-            .ok_or(DiscoveryNewServiceError::MissingTxtProperty(
-                "auth-port".into(),
-            ))?
+            .ok_or(DiscoveryNewServiceError::MissingTxtProperty("auth-port".into()))?
             .val_str();
         let auth_port = auth_port_str.parse::<u16>().map_err(|_| {
             DiscoveryNewServiceError::InvalidTxtProperty("auth-port".into(), auth_port_str.into())
@@ -116,18 +109,14 @@ impl DiscoveryService {
 
         let hostname = txt_properties
             .get("hostname")
-            .ok_or(DiscoveryNewServiceError::MissingTxtProperty(
-                "hostname".into(),
-            ))?
+            .ok_or(DiscoveryNewServiceError::MissingTxtProperty("hostname".into()))?
             .val_str();
 
         // Assume remote is using API v1 if "api-version" property is missing
         let fallback_api_version =
             mdns_sd::TxtProperty::from(("api-version".to_string(), "1".to_string()));
-        let api_version_str = txt_properties
-            .get("api-version")
-            .unwrap_or(&fallback_api_version)
-            .val_str();
+        let api_version_str =
+            txt_properties.get("api-version").unwrap_or(&fallback_api_version).val_str();
         let api_version = api_version_str.parse::<u8>().map_err(|_| {
             DiscoveryNewServiceError::InvalidTxtProperty(
                 "api-version".into(),
@@ -185,10 +174,7 @@ impl DiscoveryService {
                     })
                     .await;
 
-                if matches!(
-                    remote.state,
-                    RemoteState::Disconnected | RemoteState::Error(_)
-                ) {
+                if matches!(remote.state, RemoteState::Disconnected | RemoteState::Error(_)) {
                     tracing::info!(
                         "Previously disconnected remote is now available, attempting to connect"
                     );

@@ -1,3 +1,17 @@
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use thiserror::Error;
+use tokio::sync::{RwLock, watch};
+use tokio::time::sleep;
+use tokio_util::sync::CancellationToken;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig};
+use tracing::instrument;
+
 use crate::config::protocol::ProtocolConfig;
 use crate::proto::warp_client::WarpClient;
 use crate::proto::{LookupName, OpInfo};
@@ -7,19 +21,6 @@ use crate::server::transfer_receiver;
 use crate::types::message::{Direction, Message};
 use crate::types::remote::{RemoteConnectionError, RemoteState};
 use crate::types::transfer::{Transfer, TransferError, TransferKind, TransferState};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
-use std::net::IpAddr;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
-use thiserror::Error;
-use tokio::sync::{RwLock, watch};
-use tokio::time::sleep;
-use tokio_util::sync::CancellationToken;
-use tonic::transport::Channel;
-use tonic::transport::{Certificate, ClientTlsConfig};
-use tracing::instrument;
 
 #[derive(Error, Debug)]
 pub enum ReceiveCertError {
@@ -146,7 +147,8 @@ impl RemoteWorker {
                             e,
                             crate::types::remote::RemoteConnectionError::GroupCodeMismatch
                         ) {
-                            // Group code mismatch is not retryable, stay in error state until manual intervention
+                            // Group code mismatch is not retryable, stay in error state until
+                            // manual intervention
                             break;
                         }
                         if !wait_then_reconnect(&self, &mut state_rx).await {
@@ -191,8 +193,7 @@ impl RemoteWorker {
             Ok(ch) => ch,
             Err(e) => {
                 tracing::warn!(uuid = %self.uuid, "Failed to build TLS channel: {:#?}", e);
-                self.set_state(RemoteState::Error(RemoteConnectionError::SslError))
-                    .await;
+                self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await;
                 return Err(ConnectRemoteError::TlsError(e));
             }
         };
@@ -204,8 +205,7 @@ impl RemoteWorker {
         if let Err(e) = self.ping().await {
             tracing::warn!(uuid = %self.uuid, "Initial ping failed: {}", e);
             self.clear_channel().await;
-            self.set_state(RemoteState::Error(RemoteConnectionError::SslError))
-                .await;
+            self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await;
             return Err(ConnectRemoteError::PingError(e));
         }
 
@@ -213,8 +213,7 @@ impl RemoteWorker {
         if let Err(e) = self.wait_for_duplex().await {
             tracing::warn!(uuid = %self.uuid, "Duplex failed: {}", e);
             self.clear_channel().await;
-            self.set_state(RemoteState::Error(RemoteConnectionError::DuplexError))
-                .await;
+            self.set_state(RemoteState::Error(RemoteConnectionError::DuplexError)).await;
             return Err(ConnectRemoteError::DuplexError(e));
         }
 
@@ -242,11 +241,8 @@ impl RemoteWorker {
     }
 
     async fn receive_certificate(&self) -> Result<Vec<u8>, ReceiveCertError> {
-        let remote = self
-            .remote_manager
-            .remote(&self.uuid)
-            .await
-            .ok_or(ReceiveCertError::NoRemote)?;
+        let remote =
+            self.remote_manager.remote(&self.uuid).await.ok_or(ReceiveCertError::NoRemote)?;
 
         let addr = format!("http://{}:{}", remote.ip, remote.auth_port);
         let reg_channel = Channel::from_shared(addr)
@@ -280,15 +276,12 @@ impl RemoteWorker {
                 a
             ))
         })?;
-        let cert_pem = self
-            .authenticator
-            .unbox_cert(&decoded)
-            .map_err(|e| match e {
-                CertUnboxError::BoxTooShort => {
-                    ReceiveCertError::CertificateRequestFailed("Box too short".into())
-                }
-                CertUnboxError::DecryptionFailed => ReceiveCertError::WrongGroupCode,
-            })?;
+        let cert_pem = self.authenticator.unbox_cert(&decoded).map_err(|e| match e {
+            CertUnboxError::BoxTooShort => {
+                ReceiveCertError::CertificateRequestFailed("Box too short".into())
+            }
+            CertUnboxError::DecryptionFailed => ReceiveCertError::WrongGroupCode,
+        })?;
 
         self.remote_manager
             .update_remote(&self.uuid, |r| {
@@ -304,16 +297,10 @@ impl RemoteWorker {
         &self,
         cert_pem: &[u8],
     ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
-        let remote = self
-            .remote_manager
-            .remote(&self.uuid)
-            .await
-            .ok_or("Remote not found")?;
+        let remote = self.remote_manager.remote(&self.uuid).await.ok_or("Remote not found")?;
 
         let cert = Certificate::from_pem(cert_pem);
-        let tls = ClientTlsConfig::new()
-            .ca_certificate(cert)
-            .domain_name(remote.ip.to_string());
+        let tls = ClientTlsConfig::new().ca_certificate(cert).domain_name(remote.ip.to_string());
 
         let addr = format!("https://{}:{}", remote.ip, remote.port);
         let channel = Channel::from_shared(addr)?
@@ -368,10 +355,7 @@ impl RemoteWorker {
         let client = client.as_ref().ok_or("No client")?;
         let mut client = client.clone();
 
-        let info = client
-            .get_remote_machine_info(LookupName::default())
-            .await?
-            .into_inner();
+        let info = client.get_remote_machine_info(LookupName::default()).await?.into_inner();
 
         self.remote_manager
             .update_remote(&self.uuid, |r| {
@@ -389,10 +373,8 @@ impl RemoteWorker {
         let client = client.as_ref().ok_or("No client")?;
         let mut client = client.clone();
 
-        let mut stream = client
-            .get_remote_machine_avatar(LookupName::default())
-            .await?
-            .into_inner();
+        let mut stream =
+            client.get_remote_machine_avatar(LookupName::default()).await?.into_inner();
 
         let mut bytes = Vec::new();
         while let Some(chunk) = stream.message().await? {
@@ -420,10 +402,9 @@ impl RemoteWorker {
 
         let mut transfer = Transfer::new_outgoing(self.uuid.clone(), source_paths.clone()).await;
 
-        // Add transfer in initializing state before processing paths, so it appears in UI immediately
-        self.remote_manager
-            .add_transfer(&self.uuid, transfer.clone())
-            .await?;
+        // Add transfer in initializing state before processing paths, so it appears in
+        // UI immediately
+        self.remote_manager.add_transfer(&self.uuid, transfer.clone()).await?;
 
         let processing_result = transfer.process_paths(&source_paths).await;
 
@@ -466,9 +447,7 @@ impl RemoteWorker {
 
         let message = Message::new(self.uuid.clone(), Direction::Sent, message.to_string());
 
-        client
-            .send_text_message(message.as_proto(self.server_fullname.as_str()))
-            .await?;
+        client.send_text_message(message.as_proto(self.server_fullname.as_str())).await?;
 
         self.remote_manager.add_message(&self.uuid, message).await?;
 
@@ -491,10 +470,7 @@ impl RemoteWorker {
             .ok_or("Transfer not found")?;
 
         let remote_timestamp = match transfer.kind {
-            TransferKind::Incoming {
-                destination: _,
-                remote_timestamp,
-            } => remote_timestamp,
+            TransferKind::Incoming { destination: _, remote_timestamp } => remote_timestamp,
             TransferKind::Outgoing { source_paths: _ } => {
                 return Err("Cannot accept an outgoing transfer".into());
             }
@@ -515,10 +491,8 @@ impl RemoteWorker {
         self.remote_manager
             .update_transfer(&self.uuid, transfer_uuid, |t| {
                 t.state = TransferState::InProgress;
-                t.kind = TransferKind::Incoming {
-                    destination: destination.clone(),
-                    remote_timestamp,
-                };
+                t.kind =
+                    TransferKind::Incoming { destination: destination.clone(), remote_timestamp };
             })
             .await?;
 

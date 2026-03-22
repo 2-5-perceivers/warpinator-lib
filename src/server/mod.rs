@@ -4,18 +4,20 @@ pub mod remote_manager;
 pub mod remote_worker;
 pub mod transfer_receiver;
 
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+
+use mdns_sd::{ServiceDaemon, ServiceInfo};
+use tokio_util::sync::CancellationToken;
+use tonic::transport::{Identity, Server, ServerTlsConfig};
+
 use crate::config::protocol::ProtocolConfig;
 use crate::config::user::UserConfig;
 use crate::grpc;
-use crate::proto::{
-    ServiceRegistration, warp_registration_server::WarpRegistrationServer, warp_server::WarpServer,
-};
+use crate::proto::ServiceRegistration;
+use crate::proto::warp_registration_server::WarpRegistrationServer;
+use crate::proto::warp_server::WarpServer;
 use crate::server::discovery::DiscoveryService;
-use mdns_sd::{ServiceDaemon, ServiceInfo};
-use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
-use tonic::transport::{Identity, Server, ServerTlsConfig};
 
 const SERVICE_DOMAIN: &str = "_warpinator._tcp.local.";
 const SERVICE_API_VERSION: u16 = 2;
@@ -51,10 +53,7 @@ impl WarpinatorServerBuilder {
         let authenticator = Arc::new(authenticator::Authenticator::new(
             user_config.group_code.clone(),
             user_config.hostname.as_str(),
-            user_config
-                .bind_addr_v4
-                .ok_or("One IP address (IPv4 or IPv6) is required")?
-                .into(),
+            user_config.bind_addr_v4.ok_or("One IP address (IPv4 or IPv6) is required")?.into(),
         )?);
 
         let remotes = remote_manager::RemoteManager::new(
@@ -63,9 +62,7 @@ impl WarpinatorServerBuilder {
             protocol_config.clone(),
             user_config.hostname.clone(),
             IpAddr::from(
-                user_config
-                    .bind_addr_v4
-                    .ok_or("One IP address (IPv4 or IPv6) is required")?,
+                user_config.bind_addr_v4.ok_or("One IP address (IPv4 or IPv6) is required")?,
             ),
             service_name.clone(),
         );
@@ -94,11 +91,7 @@ pub struct WarpinatorServer {
 
 impl WarpinatorServer {
     pub fn builder() -> WarpinatorServerBuilder {
-        WarpinatorServerBuilder {
-            user_config: None,
-            protocol_config: None,
-            service_name: None,
-        }
+        WarpinatorServerBuilder { user_config: None, protocol_config: None, service_name: None }
     }
 
     pub async fn serve(self) -> Result<(), Box<dyn std::error::Error>> {
@@ -154,7 +147,8 @@ impl WarpinatorServer {
             .user_config
             .bind_addr_v4
             .map(|addr_v4| SocketAddr::new(IpAddr::V4(addr_v4), self.user_config.port));
-        // let warp_addr_v6 = self.user_config.bind_addr_v6.map(|addr_v6| SocketAddr::new(IpAddr::V6(addr_v6), self.user_config.port));
+        // let warp_addr_v6 = self.user_config.bind_addr_v6.map(|addr_v6|
+        // SocketAddr::new(IpAddr::V6(addr_v6), self.user_config.port));
         let warp_svc = grpc::warp::WarpServer::new(
             self.user_config.clone(),
             self.protocol_config.clone(),
@@ -201,9 +195,7 @@ impl WarpinatorServer {
             &self.service_name,
             &format!("{}.local.", self.user_config.hostname.clone()),
             IpAddr::from(
-                self.user_config
-                    .bind_addr_v4
-                    .ok_or("One IP address (IPv4 or IPv6) is required")?,
+                self.user_config.bind_addr_v4.ok_or("One IP address (IPv4 or IPv6) is required")?,
             ),
             self.user_config.port,
             &[
@@ -224,19 +216,14 @@ impl WarpinatorServer {
         mdns.register(service_info)?;
         tracing::info!(
             service_name = self.service_name,
-            mdns_address = self
-                .user_config
-                .bind_addr_v4
-                .map_or("".to_string(), |addr| addr.to_string()),
+            mdns_address =
+                self.user_config.bind_addr_v4.map_or("".to_string(), |addr| addr.to_string()),
             mdns_port = self.user_config.port,
             "mDNS announced",
         );
 
-        let discovery_service = DiscoveryService::new(
-            self.remotes.clone(),
-            mdns.clone(),
-            SERVICE_DOMAIN.to_string(),
-        );
+        let discovery_service =
+            DiscoveryService::new(self.remotes.clone(), mdns.clone(), SERVICE_DOMAIN.to_string());
 
         tokio::spawn(async move {
             let _ = discovery_service.start().await;

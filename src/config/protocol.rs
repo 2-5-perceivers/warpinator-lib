@@ -1,5 +1,6 @@
-use bitflags::bitflags;
 use std::time::Duration;
+
+use bitflags::bitflags;
 
 const RECONNECT_INTERVAL_DEFAULT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
@@ -72,9 +73,7 @@ impl ProtocolConfigBuilder {
     pub fn build(self) -> ProtocolConfig {
         ProtocolConfig {
             features: self.features.unwrap_or_default(),
-            reconnect_interval: self
-                .reconnect_interval
-                .unwrap_or(RECONNECT_INTERVAL_DEFAULT),
+            reconnect_interval: self.reconnect_interval.unwrap_or(RECONNECT_INTERVAL_DEFAULT),
             connect_timeout: self.connect_timeout.unwrap_or(CONNECT_TIMEOUT_DEFAULT),
             ping_interval: self.ping_interval.unwrap_or(PING_INTERVAL_DEFAULT),
             ping_timeout: self.ping_timeout.unwrap_or(PING_TIMEOUT_DEFAULT),

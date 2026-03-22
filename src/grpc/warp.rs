@@ -1,3 +1,9 @@
+use std::time::Duration;
+
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Request, Response, Status};
+use tracing::{Instrument, field, instrument};
+
 use crate::config::protocol::{ProtocolConfig, ProtocolFeatures};
 use crate::config::user::UserConfig;
 #[cfg(feature = "messaging")]
@@ -9,11 +15,6 @@ use crate::server::remote_manager::{RemoteManager, WarpEvent};
 use crate::types::message::Message;
 use crate::types::remote::RemoteState;
 use crate::types::transfer::Transfer;
-use std::time::Duration;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
-use tracing::instrument;
-use tracing::{Instrument, field};
 
 const AVATAR_CHUNK_SIZE: usize = 1024 * 64; // 64KB
 
@@ -30,16 +31,15 @@ impl WarpServer {
         protocol_config: ProtocolConfig,
         remote_manager: RemoteManager,
     ) -> Self {
-        Self {
-            user_config,
-            protocol_config,
-            remote_manager,
-        }
+        Self { user_config, protocol_config, remote_manager }
     }
 }
 
 #[tonic::async_trait]
 impl Warp for WarpServer {
+    type GetRemoteMachineAvatarStream = ReceiverStream<Result<RemoteMachineAvatar, Status>>;
+    type StartTransferStream = ReceiverStream<Result<FileChunk, Status>>;
+
     #[instrument(
         skip_all,
         fields(
@@ -120,8 +120,6 @@ impl Warp for WarpServer {
         }))
     }
 
-    type GetRemoteMachineAvatarStream = ReceiverStream<Result<RemoteMachineAvatar, Status>>;
-
     #[instrument(skip_all, level = "debug", err(level = "warn"))]
     async fn get_remote_machine_avatar(
         &self,
@@ -140,9 +138,7 @@ impl Warp for WarpServer {
                 if let Some(bytes) = picture.as_deref() {
                     for chunk in bytes.chunks(AVATAR_CHUNK_SIZE) {
                         if tx
-                            .send(Ok(RemoteMachineAvatar {
-                                avatar_chunk: chunk.to_vec(),
-                            }))
+                            .send(Ok(RemoteMachineAvatar { avatar_chunk: chunk.to_vec() }))
                             .await
                             .is_err()
                         {
@@ -170,12 +166,8 @@ impl Warp for WarpServer {
         request: Request<TransferOpRequest>,
     ) -> Result<Response<VoidType>, Status> {
         let req = request.into_inner();
-        let ident = req
-            .info
-            .as_ref()
-            .ok_or(Status::invalid_argument("Missing OpInfo"))?
-            .ident
-            .to_string();
+        let ident =
+            req.info.as_ref().ok_or(Status::invalid_argument("Missing OpInfo"))?.ident.to_string();
 
         let span = tracing::Span::current();
         span.record("id", ident.as_str());
@@ -188,8 +180,6 @@ impl Warp for WarpServer {
 
         Ok(Response::new(VoidType::default()))
     }
-
-    type StartTransferStream = ReceiverStream<Result<FileChunk, Status>>;
 
     #[instrument(skip_all, level = "debug", err(level = "warn"))]
     async fn start_transfer(
@@ -206,10 +196,7 @@ impl Warp for WarpServer {
         &self,
         request: Request<OpInfo>,
     ) -> Result<Response<VoidType>, Status> {
-        tracing::info!(
-            "[Warp] pause_transfer_op ident={}",
-            request.into_inner().ident
-        );
+        tracing::info!("[Warp] pause_transfer_op ident={}", request.into_inner().ident);
         Ok(Response::new(VoidType::default()))
     }
 
@@ -227,10 +214,7 @@ impl Warp for WarpServer {
         &self,
         request: Request<OpInfo>,
     ) -> Result<Response<VoidType>, Status> {
-        tracing::info!(
-            "[Warp] cancel_transfer_op_request ident={}",
-            request.into_inner().ident
-        );
+        tracing::info!("[Warp] cancel_transfer_op_request ident={}", request.into_inner().ident);
         Ok(Response::new(VoidType::default()))
     }
 
@@ -242,11 +226,7 @@ impl Warp for WarpServer {
     ) -> Result<Response<VoidType>, Status> {
         #[cfg(feature = "messaging")]
         {
-            if !self
-                .protocol_config
-                .features
-                .contains(ProtocolFeatures::MESSAGE_SUPPORT)
-            {
+            if !self.protocol_config.features.contains(ProtocolFeatures::MESSAGE_SUPPORT) {
                 return Err(Status::unimplemented("Messaging feature is disabled"));
             }
 

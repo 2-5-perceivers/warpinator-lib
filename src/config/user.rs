@@ -51,13 +51,9 @@ impl UserConfigBuilder {
     }
 
     pub fn default_bind_addr_v4(mut self) -> Self {
-        self.bind_addr_v4 = local_ip_address::local_ip().ok().map(|ip| {
-            if let IpAddr::V4(ipv4) = ip {
-                ipv4
-            } else {
-                Ipv4Addr::UNSPECIFIED
-            }
-        });
+        self.bind_addr_v4 = local_ip_address::local_ip()
+            .ok()
+            .map(|ip| if let IpAddr::V4(ipv4) = ip { ipv4 } else { Ipv4Addr::UNSPECIFIED });
         self
     }
 
@@ -67,13 +63,9 @@ impl UserConfigBuilder {
     }
 
     pub fn default_bind_addr_v6(mut self) -> Self {
-        self.bind_addr_v6 = local_ip_address::local_ipv6().ok().map(|ip| {
-            if let IpAddr::V6(ipv6) = ip {
-                ipv6
-            } else {
-                Ipv6Addr::UNSPECIFIED
-            }
-        });
+        self.bind_addr_v6 = local_ip_address::local_ipv6()
+            .ok()
+            .map(|ip| if let IpAddr::V6(ipv6) = ip { ipv6 } else { Ipv6Addr::UNSPECIFIED });
         self
     }
 
@@ -88,9 +80,7 @@ impl UserConfigBuilder {
     }
 
     pub fn default_hostname(mut self) -> Self {
-        self.hostname = hostname::get()
-            .ok()
-            .map(|h| h.to_string_lossy().to_string());
+        self.hostname = hostname::get().ok().map(|h| h.to_string_lossy().to_string());
         self
     }
 
@@ -120,18 +110,10 @@ impl UserConfigBuilder {
             reg_port: self.reg_port.unwrap_or(DEFAULT_REG_PORT),
             bind_addr_v4: self.bind_addr_v4,
             bind_addr_v6: self.bind_addr_v6,
-            group_code: self
-                .group_code
-                .unwrap_or_else(|| DEFAULT_GROUP_CODE.to_string()),
-            hostname: self
-                .hostname
-                .unwrap_or_else(|| DEFAULT_HOSTNAME.to_string()),
-            username: self
-                .username
-                .unwrap_or_else(|| DEFAULT_USERNAME.to_string()),
-            display_name: self
-                .display_name
-                .unwrap_or_else(|| DEFAULT_DISPLAY_NAME.to_string()),
+            group_code: self.group_code.unwrap_or_else(|| DEFAULT_GROUP_CODE.to_string()),
+            hostname: self.hostname.unwrap_or_else(|| DEFAULT_HOSTNAME.to_string()),
+            username: self.username.unwrap_or_else(|| DEFAULT_USERNAME.to_string()),
+            display_name: self.display_name.unwrap_or_else(|| DEFAULT_DISPLAY_NAME.to_string()),
             picture: self.picture.map(Arc::new),
         }
     }
@@ -147,7 +129,8 @@ pub struct UserConfig {
     pub hostname: String,
     pub username: String,
     pub display_name: String,
-    /// The user's picture as a byte vector. The image format is PNG. This is optional and can be None if the user does not want to set a picture.
+    /// The user's picture as a byte vector. The image format is PNG. This is
+    /// optional and can be None if the user does not want to set a picture.
     pub picture: Option<Arc<Vec<u8>>>,
 }
 

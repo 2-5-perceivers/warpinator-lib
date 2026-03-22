@@ -1,27 +1,26 @@
 mod tui;
 
-use anyhow::Result;
-use ratatui::crossterm::event::KeyCode;
-use ratatui::crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture, Event as CEvent},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use ratatui::{Terminal, backend::CrosstermBackend};
-use sha2::{Digest, Sha256};
-use std::env;
-use std::fs;
-use std::io;
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc as std_mpsc,
-};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc as std_mpsc};
 use std::time::Duration;
+use std::{env, fs, io};
+
+use anyhow::Result;
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode,
+};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
-use tracing_subscriber::{fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt};
-use tui::app::InputMode;
-use tui::app::{App, AppEvent, Focus};
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tui::app::{App, AppEvent, Focus, InputMode};
 use warpinator_lib::WarpinatorServer;
 use warpinator_lib::config::user::UserConfig;
 use warpinator_lib::remote_manager::RemoteManager;
@@ -33,6 +32,7 @@ struct TuiLogWriter {
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TuiLogWriter {
     type Writer = TuiLogWriter;
+
     fn make_writer(&'a self) -> Self::Writer {
         self.clone()
     }
@@ -48,6 +48,7 @@ impl io::Write for TuiLogWriter {
         }
         Ok(buf.len())
     }
+
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -61,9 +62,7 @@ async fn main() -> Result<()> {
         env::var("WARPINATOR_GROUP_CODE").unwrap_or_else(|_| "Warpinator-TUI".to_string());
     let display_name =
         env::var("WARPINATOR_DISPLAY_NAME").unwrap_or_else(|_| "Warpinator RS".to_string());
-    let picture = env::var("WARPINATOR_PICTURE")
-        .ok()
-        .and_then(|path| fs::read(path).ok());
+    let picture = env::var("WARPINATOR_PICTURE").ok().and_then(|path| fs::read(path).ok());
     let username = env::var("USER")
         .or_else(|_| env::var("USERNAME"))
         .or_else(|_| env::var("WARPINATOR_USERNAME"))
@@ -173,11 +172,7 @@ async fn main() -> Result<()> {
     let _ = term_handle.await;
 
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
 
     let _ = shutdown_tx.send(());

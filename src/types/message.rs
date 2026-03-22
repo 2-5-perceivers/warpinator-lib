@@ -1,5 +1,6 @@
-use crate::proto::TextMessage;
 use uuid::Uuid;
+
+use crate::proto::TextMessage;
 
 #[derive(Clone, Debug)]
 pub enum Direction {
@@ -38,10 +39,6 @@ impl Message {
 
 impl From<&TextMessage> for Message {
     fn from(value: &TextMessage) -> Self {
-        Message::new(
-            value.ident.clone(),
-            Direction::Received,
-            value.message.clone(),
-        )
+        Message::new(value.ident.clone(), Direction::Received, value.message.clone())
     }
 }

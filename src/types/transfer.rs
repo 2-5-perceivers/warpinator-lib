@@ -1,9 +1,11 @@
-use crate::proto::{OpInfo, TransferOpRequest};
-use async_walkdir::WalkDir;
 use std::io::ErrorKind as IoErrorKind;
 use std::path::{Path, PathBuf};
+
+use async_walkdir::WalkDir;
 use thiserror::Error;
 use tokio_stream::StreamExt;
+
+use crate::proto::{OpInfo, TransferOpRequest};
 
 #[derive(Error, Clone, Debug)]
 pub enum TransferError {
@@ -76,7 +78,8 @@ pub struct Transfer {
 
     /// Current state of the transfer
     pub state: TransferState,
-    /// Timestamp of the time when the transfer was created(sent/received) in milliseconds
+    /// Timestamp of the time when the transfer was created(sent/received) in
+    /// milliseconds
     pub timestamp: u64,
 
     /// Total size of the transfer in bytes
@@ -90,12 +93,15 @@ pub struct Transfer {
     pub file_count: u64,
     /// Names of the top dir entries in the transfer
     pub entry_names: Vec<String>,
-    /// Utilized only if the transfer contains a single file. Name of the file being transferred
+    /// Utilized only if the transfer contains a single file. Name of the file
+    /// being transferred
     pub single_name: Option<String>,
-    /// Utilized only if the transfer contains a single file. MIME type of the file being transferred
+    /// Utilized only if the transfer contains a single file. MIME type of the
+    /// file being transferred
     pub single_mime_type: Option<String>,
 
-    /// Kind of transfer - incoming or outgoing. Contains additional data relevant to the kind
+    /// Kind of transfer - incoming or outgoing. Contains additional data
+    /// relevant to the kind
     pub kind: TransferKind,
 }
 
@@ -106,7 +112,9 @@ pub enum TransferKind {
     },
     Incoming {
         destination: PathBuf,
-        /// The timestamp of the transfer on the remote side. This is used as id for the transfer in the protocol. Ironically, this might not be a timestamp
+        /// The timestamp of the transfer on the remote side. This is used as id
+        /// for the transfer in the protocol. Ironically, this might not be a
+        /// timestamp
         remote_timestamp: u64,
     },
 }
@@ -165,28 +173,22 @@ impl Transfer {
         let mut entry_names = Vec::new();
 
         if paths.len() == 1 && paths[0].as_ref().is_file() {
-            let metadata = tokio::fs::metadata(&paths[0])
-                .await
-                .map_err(SourcePathError::IoError)?;
+            let metadata =
+                tokio::fs::metadata(&paths[0]).await.map_err(SourcePathError::IoError)?;
             total_size = metadata.len();
             file_count = 1;
 
             let file_name = paths[0]
                 .as_ref()
                 .file_name()
-                .ok_or(SourcePathError::UnsupportedPathType(
-                    paths[0].as_ref().into(),
-                ))?
+                .ok_or(SourcePathError::UnsupportedPathType(paths[0].as_ref().into()))?
                 .to_string_lossy()
                 .to_string();
 
             entry_names.push(file_name.clone());
             let single_name = Some(file_name);
             let single_mime_type = Some(
-                mime_guess::from_path(&paths[0])
-                    .first_or_octet_stream()
-                    .essence_str()
-                    .to_string(),
+                mime_guess::from_path(&paths[0]).first_or_octet_stream().essence_str().to_string(),
             );
 
             self.single_name = single_name;
@@ -197,9 +199,8 @@ impl Transfer {
             Ok(())
         } else {
             for p in paths {
-                let path_metadata = tokio::fs::metadata(p)
-                    .await
-                    .map_err(SourcePathError::IoError)?;
+                let path_metadata =
+                    tokio::fs::metadata(p).await.map_err(SourcePathError::IoError)?;
 
                 if path_metadata.is_file() {
                     total_size += path_metadata.len();
@@ -269,11 +270,9 @@ impl From<TransferOpRequest> for Transfer {
                 None
             },
             kind: TransferKind::Incoming {
-                destination: PathBuf::from("/"), // default destination, should be updated when transfer is accepted
-                remote_timestamp: value
-                    .info
-                    .expect("TransferOpRequest must have info")
-                    .timestamp,
+                // default destination, should be updated when the transfer is accepted
+                destination: PathBuf::from("/"),
+                remote_timestamp: value.info.expect("TransferOpRequest must have info").timestamp,
             },
         }
     }

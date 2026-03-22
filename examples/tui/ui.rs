@@ -1,15 +1,14 @@
-use crate::tui::app::{App, Focus, InputMode};
 use bytesize::ByteSize;
-use ratatui::{
-    Frame,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-};
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use warpinator_lib::types::message;
 use warpinator_lib::types::remote::{RemoteConnectionError, RemoteState};
 use warpinator_lib::types::transfer::TransferState;
+
+use crate::tui::app::{App, Focus, InputMode};
 
 fn fmt_seconds(secs: u64) -> String {
     // format as "1h 2m 3s" or "2m 5s" or "5s"
@@ -128,10 +127,8 @@ fn draw_remotes(f: &mut Frame, app: &App, area: Rect) {
         state.select(Some(app.selected_remote));
     }
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(highlight_style())
-        .highlight_symbol("> ");
+    let list =
+        List::new(items).block(block).highlight_style(highlight_style()).highlight_symbol("> ");
 
     f.render_stateful_widget(list, area, &mut state);
 }
@@ -143,10 +140,8 @@ fn draw_transfers(f: &mut Frame, app: &App, area: Rect) {
         None => " Transfers ".to_string(),
     };
 
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(focus_style(focused));
+    let block =
+        Block::default().title(title).borders(Borders::ALL).border_style(focus_style(focused));
 
     let transfers = app.current_transfers();
 
@@ -158,12 +153,7 @@ fn draw_transfers(f: &mut Frame, app: &App, area: Rect) {
             let base = if let Some(name) = &transfer.single_name {
                 name.clone()
             } else {
-                let mut names = transfer
-                    .entry_names
-                    .iter()
-                    .take(3)
-                    .cloned()
-                    .collect::<Vec<_>>();
+                let mut names = transfer.entry_names.iter().take(3).cloned().collect::<Vec<_>>();
                 if transfer.entry_names.len() > 3 {
                     names.push("...".to_string());
                 }
@@ -177,7 +167,8 @@ fn draw_transfers(f: &mut Frame, app: &App, area: Rect) {
                 .map(|d| (d.displayed_bytes_per_second, d.displayed_bytes_transferred))
                 .unwrap_or((transfer.bytes_per_second, transfer.bytes_transferred));
 
-            // Stats: keep parentheses for size; for in-progress show (speed /s, X remaining)
+            // Stats: keep parentheses for size; for in-progress show (speed /s, X
+            // remaining)
             let stats = match transfer.state {
                 TransferState::InProgress => {
                     // Format speed with a single decimal and human unit to reduce flicker
@@ -242,10 +233,8 @@ fn draw_transfers(f: &mut Frame, app: &App, area: Rect) {
         state.select(Some(app.selected_transfer));
     }
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(highlight_style())
-        .highlight_symbol("> ");
+    let list =
+        List::new(items).block(block).highlight_style(highlight_style()).highlight_symbol("> ");
 
     f.render_stateful_widget(list, area, &mut state);
 }
@@ -256,10 +245,8 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
         Some(remote) => format!(" Messages — {} ", remote.display_name),
         None => " Messages ".to_string(),
     };
-    let block = Block::default()
-        .title(title)
-        .borders(Borders::ALL)
-        .border_style(focus_style(focused));
+    let block =
+        Block::default().title(title).borders(Borders::ALL).border_style(focus_style(focused));
 
     let messages = app.current_messages();
     let items: Vec<ListItem> = messages
@@ -279,11 +266,7 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     // Always show at least one empty item if no messages
-    let items = if items.is_empty() {
-        vec![ListItem::new("")]
-    } else {
-        items
-    };
+    let items = if items.is_empty() { vec![ListItem::new("")] } else { items };
 
     let list = List::new(items).block(block);
     f.render_widget(list, area);
@@ -293,14 +276,8 @@ fn draw_log(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().title(" Log ").borders(Borders::ALL);
     let inner_height = area.height.saturating_sub(2) as usize;
 
-    let lines: Vec<Line> = app
-        .log
-        .iter()
-        .rev()
-        .take(inner_height)
-        .rev()
-        .map(|s| Line::from(s.as_str()))
-        .collect();
+    let lines: Vec<Line> =
+        app.log.iter().rev().take(inner_height).rev().map(|s| Line::from(s.as_str())).collect();
 
     let para = Paragraph::new(lines).block(block);
     f.render_widget(para, area);
@@ -317,7 +294,9 @@ fn draw_statusbar(f: &mut Frame, app: &App, area: Rect) {
         Some(InputMode::Message) => {
             format!(" Message: {}_", app.input_buf)
         }
-        None => " j/k: nav  Tab: pane  s: send file  m: message  a: accept  r: reject  p: pause  x: stop  q: quit".to_string(),
+        None => " j/k: nav  Tab: pane  s: send file  m: message  a: accept  r: reject  p: pause  \
+                 x: stop  q: quit"
+            .to_string(),
     };
 
     let style = match app.input_mode {
@@ -325,24 +304,15 @@ fn draw_statusbar(f: &mut Frame, app: &App, area: Rect) {
         None => Style::default().fg(Color::DarkGray),
     };
 
-    let bar = Paragraph::new(content)
-        .style(style)
-        .block(Block::default().borders(Borders::ALL));
+    let bar = Paragraph::new(content).style(style).block(Block::default().borders(Borders::ALL));
 
     f.render_widget(bar, area);
 }
 
 fn focus_style(focused: bool) -> Style {
-    if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    }
+    if focused { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::DarkGray) }
 }
 
 fn highlight_style() -> Style {
-    Style::default()
-        .fg(Color::Black)
-        .bg(Color::Cyan)
-        .add_modifier(Modifier::BOLD)
+    Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
 }

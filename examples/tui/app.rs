@@ -1,6 +1,7 @@
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use std::collections::{HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use warpinator_lib::remote_manager::{RemoteManager, WarpEvent};
 #[cfg(feature = "messaging")]
 use warpinator_lib::types::message::Message;
@@ -36,11 +37,7 @@ impl AppEvent {
             #[cfg(feature = "messaging")]
             WarpEvent::MessageAdded(remote_uuid, message_uuid) => {
                 let remote = rm.remote(&remote_uuid).await?;
-                let message = remote
-                    .messages
-                    .iter()
-                    .find(|m| m.uuid == message_uuid)?
-                    .clone();
+                let message = remote.messages.iter().find(|m| m.uuid == message_uuid)?.clone();
                 Some(AppEvent::MessageAdded(remote_uuid, message))
             }
             _ => None,
@@ -132,9 +129,7 @@ impl App {
     }
 
     pub fn current_messages(&self) -> &[Message] {
-        self.current_remote()
-            .map(|r| r.messages.as_slice())
-            .unwrap_or(&[])
+        self.current_remote().map(|r| r.messages.as_slice()).unwrap_or(&[])
     }
 
     pub fn handle_event(&mut self, ev: AppEvent) {
@@ -149,10 +144,7 @@ impl App {
                 }
             }
             AppEvent::TransferAdded(remote_uuid, transfer) => {
-                self.transfers
-                    .entry(remote_uuid)
-                    .or_default()
-                    .push(transfer.clone());
+                self.transfers.entry(remote_uuid).or_default().push(transfer.clone());
                 // Initialize display cache for this transfer
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -176,14 +168,13 @@ impl App {
                             .duration_since(UNIX_EPOCH)
                             .map(|d| d.as_millis())
                             .unwrap_or(0);
-                        let entry = self
-                            .transfer_display
-                            .entry(transfer.uuid.clone())
-                            .or_insert(TransferDisplay {
+                        let entry = self.transfer_display.entry(transfer.uuid.clone()).or_insert(
+                            TransferDisplay {
                                 last_update_ms: 0,
                                 displayed_bytes_transferred: transfer.bytes_transferred,
                                 displayed_bytes_per_second: transfer.bytes_per_second,
-                            });
+                            },
+                        );
                         if now.saturating_sub(entry.last_update_ms) >= throttle_ms {
                             entry.last_update_ms = now;
                             entry.displayed_bytes_transferred = transfer.bytes_transferred;
@@ -235,12 +226,14 @@ impl App {
             }
             KeyCode::Char('a') => {
                 if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
-                    // TODO: rm.get_worker(remote_uuid).accept_transfer(&_t.uuid)
+                    // TODO: rm.get_worker(remote_uuid).accept_transfer(&_t.
+                    // uuid)
                 }
             }
             KeyCode::Char('r') => {
                 if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
-                    // TODO: rm.get_worker(remote_uuid).reject_transfer(&_t.uuid)
+                    // TODO: rm.get_worker(remote_uuid).reject_transfer(&_t.
+                    // uuid)
                 }
             }
             KeyCode::Char('p') => {
@@ -282,7 +275,8 @@ impl App {
                     Some(InputMode::FilePath) => {
                         if let Some(remote) = self.current_remote() {
                             self.log(format!("send '{}' -> {}", value, remote.uuid));
-                            // TODO: rm.get_worker(&remote.uuid).send_file(PathBuf::from(value))
+                            // TODO: rm.get_worker(&remote.uuid).
+                            // send_file(PathBuf::from(value))
                         }
                     }
                     Some(InputMode::AcceptDestination) => {
@@ -330,10 +324,8 @@ impl App {
         match self.focus {
             Focus::Remotes => {
                 if !self.remotes.is_empty() {
-                    self.selected_remote = self
-                        .selected_remote
-                        .checked_sub(1)
-                        .unwrap_or(self.remotes.len() - 1);
+                    self.selected_remote =
+                        self.selected_remote.checked_sub(1).unwrap_or(self.remotes.len() - 1);
                     self.selected_transfer = 0;
                 }
             }

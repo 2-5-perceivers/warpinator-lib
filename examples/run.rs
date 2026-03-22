@@ -71,9 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     server
         .serve_with_shutdown(async {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to listen for ctrl-c");
+            tokio::signal::ctrl_c().await.expect("failed to listen for ctrl-c");
         })
         .await?;
 
