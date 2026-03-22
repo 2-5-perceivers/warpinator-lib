@@ -172,73 +172,77 @@ impl Transfer {
         let mut file_count = 0;
         let mut entry_names = Vec::new();
 
-        if paths.len() == 1 && paths[0].as_ref().is_file() {
+        if paths.len() == 1 {
             let metadata =
                 tokio::fs::metadata(&paths[0]).await.map_err(SourcePathError::IoError)?;
-            total_size = metadata.len();
-            file_count = 1;
+            if metadata.is_file() {
+                total_size = metadata.len();
+                file_count = 1;
 
-            let file_name = paths[0]
-                .as_ref()
-                .file_name()
-                .ok_or(SourcePathError::UnsupportedPathType(paths[0].as_ref().into()))?
-                .to_string_lossy()
-                .to_string();
+                let file_name = paths[0]
+                    .as_ref()
+                    .file_name()
+                    .ok_or(SourcePathError::UnsupportedPathType(paths[0].as_ref().into()))?
+                    .to_string_lossy()
+                    .to_string();
 
-            entry_names.push(file_name.clone());
-            let single_name = Some(file_name);
-            let single_mime_type = Some(
-                mime_guess::from_path(&paths[0]).first_or_octet_stream().essence_str().to_string(),
-            );
+                entry_names.push(file_name.clone());
+                let single_name = Some(file_name);
+                let single_mime_type = Some(
+                    mime_guess::from_path(&paths[0])
+                        .first_or_octet_stream()
+                        .essence_str()
+                        .to_string(),
+                );
 
-            self.single_name = single_name;
-            self.single_mime_type = single_mime_type;
-            self.total_bytes = total_size;
-            self.entry_names = entry_names;
-            self.file_count = file_count;
-            Ok(())
-        } else {
-            for p in paths {
-                let path_metadata =
-                    tokio::fs::metadata(p).await.map_err(SourcePathError::IoError)?;
+                self.single_name = single_name;
+                self.single_mime_type = single_mime_type;
+                self.total_bytes = total_size;
+                self.entry_names = entry_names;
+                self.file_count = file_count;
+                return Ok(());
+            }
+        }
 
-                if path_metadata.is_file() {
-                    total_size += path_metadata.len();
-                    file_count += 1;
-                } else if path_metadata.is_dir() {
-                    let mut entries = WalkDir::new(p);
-                    while let Some(entry) = entries.next().await {
-                        match entry {
-                            Ok(entry) => {
-                                if let Ok(metadata) = entry.metadata().await {
-                                    if metadata.is_file() {
-                                        total_size += metadata.len();
-                                        file_count += 1;
-                                    }
+        for p in paths {
+            let path_metadata = tokio::fs::metadata(p).await.map_err(SourcePathError::IoError)?;
+
+            if path_metadata.is_file() {
+                total_size += path_metadata.len();
+                file_count += 1;
+            } else if path_metadata.is_dir() {
+                let mut entries = WalkDir::new(p);
+                while let Some(entry) = entries.next().await {
+                    match entry {
+                        Ok(entry) => {
+                            if let Ok(metadata) = entry.metadata().await {
+                                if metadata.is_file() {
+                                    total_size += metadata.len();
+                                    file_count += 1;
                                 }
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to read entry in directory {}: {}",
-                                    p.as_ref().display(),
-                                    e
-                                );
-                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to read entry in directory {}: {}",
+                                p.as_ref().display(),
+                                e
+                            );
                         }
                     }
                 }
-
-                if let Some(file_name) = p.as_ref().file_name() {
-                    entry_names.push(file_name.to_string_lossy().to_string());
-                }
             }
-            self.single_name = None;
-            self.single_mime_type = None;
-            self.total_bytes = total_size;
-            self.entry_names = entry_names;
-            self.file_count = file_count;
-            Ok(())
+
+            if let Some(file_name) = p.as_ref().file_name() {
+                entry_names.push(file_name.to_string_lossy().to_string());
+            }
         }
+        self.single_name = None;
+        self.single_mime_type = None;
+        self.total_bytes = total_size;
+        self.entry_names = entry_names;
+        self.file_count = file_count;
+        Ok(())
     }
 }
 
