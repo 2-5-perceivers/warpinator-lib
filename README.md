@@ -20,7 +20,7 @@ implementation.
 - [x] Implement authentication
 - [x] Implement remote management
 - [x] Implement message sending
-- [ ] Implement file transfers
+- [x] Implement file transfers
 - [ ] Compression
 - [ ] ipv6 support
 

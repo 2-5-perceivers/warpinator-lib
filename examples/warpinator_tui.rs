@@ -24,6 +24,8 @@ use tui::app::{App, AppEvent, Focus, InputMode};
 use warpinator_lib::WarpinatorServer;
 use warpinator_lib::config::user::UserConfig;
 use warpinator_lib::remote_manager::RemoteManager;
+use warpinator_lib::types::remote::RemoteState;
+use warpinator_lib::types::transfer::TransferState;
 
 #[derive(Clone)]
 struct TuiLogWriter {
@@ -260,7 +262,7 @@ async fn run(
                             if app.input_mode.is_none() && app.focus == Focus::Transfers {
                                 if let Some((remote_uuid, transfer_uuid)) = (|| {
                                     if let Some(remote) = app.current_remote() {
-                                        if let Some(t) = app.current_transfers().get(app.selected_transfer) {
+                                        if let Some(t) = app.current_transfers().get(app.selected_transfer) && matches!(t.state, TransferState::WaitingPermission) && matches!(t.kind, warpinator_lib::types::transfer::TransferKind::Incoming { .. }) {
                                             return Some((remote.uuid.clone(), t.uuid.clone()));
                                         }
                                     }
@@ -275,6 +277,95 @@ async fn run(
                                     app.input_buf = dest;
                                     app.pending_accept = Some((remote_uuid, transfer_uuid));
                                     handled = true;
+                                }
+                            }
+                        }
+
+                        if key.code == KeyCode::Char('r') {
+                            if app.input_mode.is_none() && app.focus == Focus::Transfers {
+                                if let Some(transfer) = app.current_transfer() {
+                                    if matches!(transfer.state, TransferState::WaitingPermission) {
+                                        let remote_uuid = app.current_remote().unwrap().uuid.clone();
+                                        let transfer_uuid = transfer.uuid.clone();
+                                        let rm = remote_manager.clone();
+                                        tokio::spawn(async move {
+                                            if let Some(worker) = rm.get_worker(&remote_uuid).await {
+                                                let _ = worker.cancel_transfer(&transfer_uuid).await;
+                                            }
+                                        });
+                                        handled = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if key.code == KeyCode::Char('c') {
+                            if app.input_mode.is_none() && app.focus == Focus::Remotes {
+                                if let Some(remote) = app.current_remote() {
+                                    if matches!(remote.state, RemoteState::Disconnected | RemoteState::Error(_)) {
+                                        let remote_uuid = remote.uuid.clone();
+                                        let rm = remote_manager.clone();
+                                        tokio::spawn(async move {
+                                            if let Some(worker) = rm.get_worker(&remote_uuid).await {
+                                                let _ = worker.connect().await;
+                                            }
+                                        });
+                                        handled = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if key.code == KeyCode::Char('x') {
+                            if app.input_mode.is_none() && app.focus == Focus::Transfers {
+                                if let Some(transfer) = app.current_transfer() {
+                                    if matches!(transfer.state, TransferState::InProgress) {
+                                        let remote_uuid = app.current_remote().unwrap().uuid.clone();
+                                        let transfer_uuid = transfer.uuid.clone();
+                                        let rm = remote_manager.clone();
+                                        tokio::spawn(async move {
+                                            if let Some(worker) = rm.get_worker(&remote_uuid).await {
+                                                let _ = worker.stop_transfer(&transfer_uuid, false).await;
+                                            }
+                                        });
+                                        handled = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if key.code == KeyCode::Delete {
+                            if app.input_mode.is_none() {
+                                match app.focus {
+                                    Focus::Transfers => {
+                                        if let Some(transfer) = app.current_transfer() {
+                                            if matches!(transfer.state, TransferState::Failed(_)
+                            | TransferState::Completed
+                            | TransferState::Stopped
+                            | TransferState::Denied
+                            | TransferState::Canceled) {
+                                                let remote_uuid = app.current_remote().unwrap().uuid.clone();
+                                                let transfer_uuid = transfer.uuid.clone();
+                                                let rm = remote_manager.clone();
+                                                tokio::spawn(async move {
+                                                    let _ = rm.remove_transfer(&remote_uuid, &transfer_uuid).await;
+                                                });
+                                                handled = true;
+                                            }
+                                        }
+                                    }
+                                    Focus::Messages => {
+                                        if let Some(message) = app.current_message() {
+                                            let remote_uuid = app.current_remote().unwrap().uuid.clone();
+                                            let message_uuid = message.uuid.clone();
+                                            let rm = remote_manager.clone();
+                                            tokio::spawn(async move {
+                                                let _ = rm.remove_message(&remote_uuid, &message_uuid).await;
+                                            });
+                                            handled = true;
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         }

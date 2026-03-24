@@ -5,8 +5,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use warpinator_lib::remote_manager::{RemoteManager, WarpEvent};
 #[cfg(feature = "messaging")]
 use warpinator_lib::types::message::Message;
-use warpinator_lib::types::remote::Remote;
-use warpinator_lib::types::transfer::Transfer;
+use warpinator_lib::types::remote::{Remote, RemoteState};
+use warpinator_lib::types::transfer::{Transfer, TransferState};
 
 pub enum AppEvent {
     Terminal(ratatui::crossterm::event::Event),
@@ -14,9 +14,12 @@ pub enum AppEvent {
     RemoteUpdated(Remote),
     TransferAdded(String, Transfer),   // remote_uuid, transfer
     TransferUpdated(String, Transfer), // remote_uuid, transfer
+    TransferRemoved(String, String),   // remote_uuid, transfer_uuid
     Log(String),
     #[cfg(feature = "messaging")]
     MessageAdded(String, Message), // remote_uuid, message
+    #[cfg(feature = "messaging")]
+    MessageRemoved(String, String), // remote_uuid, message_uuid
 }
 
 impl AppEvent {
@@ -34,11 +37,18 @@ impl AppEvent {
                 let transfer = rm.transfer(&remote_uuid, &transfer_uuid).await?;
                 Some(AppEvent::TransferUpdated(remote_uuid, transfer))
             }
+            WarpEvent::TransferRemoved(remote_uuid, transfer_uuid) => {
+                Some(AppEvent::TransferRemoved(remote_uuid, transfer_uuid))
+            }
             #[cfg(feature = "messaging")]
             WarpEvent::MessageAdded(remote_uuid, message_uuid) => {
                 let remote = rm.remote(&remote_uuid).await?;
                 let message = remote.messages.iter().find(|m| m.uuid == message_uuid)?.clone();
                 Some(AppEvent::MessageAdded(remote_uuid, message))
+            }
+            #[cfg(feature = "messaging")]
+            WarpEvent::MessageRemoved(remote_uuid, message_uuid) => {
+                Some(AppEvent::MessageRemoved(remote_uuid, message_uuid))
             }
             _ => None,
         }
@@ -75,6 +85,7 @@ pub struct App {
     pub selected_remote: usize,
     pub transfers: HashMap<String, Vec<Transfer>>,
     pub selected_transfer: usize,
+    pub selected_message: usize,
     pub focus: Focus,
     pub input_mode: Option<InputMode>,
     pub input_buf: String,
@@ -100,6 +111,7 @@ impl App {
             selected_remote: 0,
             transfers: HashMap::new(),
             selected_transfer: 0,
+            selected_message: 0,
             focus: Focus::Remotes,
             input_mode: None,
             input_buf: String::new(),
@@ -130,6 +142,14 @@ impl App {
 
     pub fn current_messages(&self) -> &[Message] {
         self.current_remote().map(|r| r.messages.as_slice()).unwrap_or(&[])
+    }
+
+    pub fn current_transfer(&self) -> Option<&Transfer> {
+        self.current_transfers().get(self.selected_transfer)
+    }
+
+    pub fn current_message(&self) -> Option<&Message> {
+        self.current_messages().get(self.selected_message)
     }
 
     pub fn handle_event(&mut self, ev: AppEvent) {
@@ -183,10 +203,27 @@ impl App {
                     }
                 }
             }
+            AppEvent::TransferRemoved(remote_uuid, transfer_uuid) => {
+                if let Some(transfers) = self.transfers.get_mut(&remote_uuid) {
+                    transfers.retain(|t| t.uuid != transfer_uuid);
+                    if self.selected_transfer >= transfers.len() {
+                        self.selected_transfer = transfers.len().saturating_sub(1);
+                    }
+                }
+            }
             #[cfg(feature = "messaging")]
             AppEvent::MessageAdded(remote_uuid, message) => {
                 if let Some(remote) = self.remotes.iter_mut().find(|r| r.uuid == remote_uuid) {
                     remote.messages.push(message);
+                }
+            }
+            #[cfg(feature = "messaging")]
+            AppEvent::MessageRemoved(remote_uuid, message_uuid) => {
+                if let Some(remote) = self.remotes.iter_mut().find(|r| r.uuid == remote_uuid) {
+                    remote.messages.retain(|m| m.uuid != message_uuid);
+                    if self.selected_message >= remote.messages.len() {
+                        self.selected_message = remote.messages.len().saturating_sub(1);
+                    }
                 }
             }
             AppEvent::Log(line) => {
@@ -224,32 +261,65 @@ impl App {
                     self.input_buf.clear();
                 }
             }
-            KeyCode::Char('a') => {
-                if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
-                    // TODO: rm.get_worker(remote_uuid).accept_transfer(&_t.
-                    // uuid)
+            KeyCode::Char('c') => {
+                if self.focus == Focus::Remotes {
+                    if let Some(remote) = self.current_remote() {
+                        if !matches!(remote.state, RemoteState::Connected) {
+                            self.log(format!("Connecting to {}...", remote.display_name)); // This is now handled in warpinator_tui.rs
+                        }
+                    }
                 }
             }
-            KeyCode::Char('r') => {
-                if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
-                    // TODO: rm.get_worker(remote_uuid).reject_transfer(&_t.
-                    // uuid)
-                }
-            }
-            KeyCode::Char('p') => {
-                if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
-                    // TODO: control channel on TransferKind::Outgoing
-                }
-            }
-            KeyCode::Char('x') => {
-                if let Some(_t) = self.current_transfers().get(self.selected_transfer) {
-                    // TODO: control channel on TransferKind::Outgoing
-                }
+            KeyCode::Char('a') | KeyCode::Char('r') | KeyCode::Char('x') | KeyCode::Delete => {
+                self.handle_action_keys(key.code);
             }
             _ => {}
         }
 
         Action::None
+    }
+
+    fn handle_action_keys(&mut self, code: KeyCode) {
+        match self.focus {
+            Focus::Transfers => {
+                if let Some(transfer) = self.current_transfer().cloned() {
+                    match code {
+                        KeyCode::Char('a') => {
+                            if matches!(transfer.state, TransferState::WaitingPermission) {
+                                self.log("Accepting transfer...".to_string()); // This is now handled in warpinator_tui.rs
+                            }
+                        }
+                        KeyCode::Char('r') => {
+                            if matches!(transfer.state, TransferState::WaitingPermission) {
+                                self.log("Rejecting transfer...".to_string()); // This is now handled in warpinator_tui.rs
+                            }
+                        }
+                        KeyCode::Char('x') => {
+                            if matches!(transfer.state, TransferState::InProgress) {
+                                self.log("Stopping transfer...".to_string()); // This is now handled in warpinator_tui.rs
+                            }
+                        }
+                        KeyCode::Delete => {
+                            if matches!(
+                                transfer.state,
+                                TransferState::Failed(_) | TransferState::Completed
+                            ) {
+                                self.log("Deleting transfer...".to_string()); // This is now handled in warpinator_tui.rs
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Focus::Messages => {
+                if let Some(_message) = self.current_message().cloned() {
+                    if code == KeyCode::Delete {
+                        self.log("Deleting message...".to_string()); // This is now handled in warpinator_tui.rs
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn consume_input(&mut self) -> Option<(InputMode, String)> {
@@ -274,9 +344,7 @@ impl App {
                 match self.input_mode.take() {
                     Some(InputMode::FilePath) => {
                         if let Some(remote) = self.current_remote() {
-                            self.log(format!("send '{}' -> {}", value, remote.uuid));
-                            // TODO: rm.get_worker(&remote.uuid).
-                            // send_file(PathBuf::from(value))
+                            self.log(format!("send '{}' -> {}", value, remote.uuid)); // This is now handled in warpinator_tui.rs
                         }
                     }
                     Some(InputMode::AcceptDestination) => {
@@ -308,6 +376,7 @@ impl App {
                 if !self.remotes.is_empty() {
                     self.selected_remote = (self.selected_remote + 1) % self.remotes.len();
                     self.selected_transfer = 0;
+                    self.selected_message = 0;
                 }
             }
             Focus::Transfers => {
@@ -316,7 +385,12 @@ impl App {
                     self.selected_transfer = (self.selected_transfer + 1) % len;
                 }
             }
-            Focus::Messages => {}
+            Focus::Messages => {
+                let len = self.current_messages().len();
+                if len > 0 {
+                    self.selected_message = (self.selected_message + 1) % len;
+                }
+            }
         }
     }
 
@@ -327,6 +401,7 @@ impl App {
                     self.selected_remote =
                         self.selected_remote.checked_sub(1).unwrap_or(self.remotes.len() - 1);
                     self.selected_transfer = 0;
+                    self.selected_message = 0;
                 }
             }
             Focus::Transfers => {
@@ -336,7 +411,12 @@ impl App {
                         self.selected_transfer.checked_sub(1).unwrap_or(len - 1);
                 }
             }
-            Focus::Messages => {}
+            Focus::Messages => {
+                let len = self.current_messages().len();
+                if len > 0 {
+                    self.selected_message = self.selected_message.checked_sub(1).unwrap_or(len - 1);
+                }
+            }
         }
     }
 }

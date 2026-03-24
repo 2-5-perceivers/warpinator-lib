@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use warpinator_lib::types::message;
 use warpinator_lib::types::remote::{RemoteConnectionError, RemoteState};
-use warpinator_lib::types::transfer::TransferState;
+use warpinator_lib::types::transfer::{TransferKind, TransferState};
 
 use crate::tui::app::{App, Focus, InputMode};
 
@@ -99,6 +99,7 @@ fn transfer_state_span(state: &'_ TransferState) -> Span<'_> {
         TransferState::Canceled => Span::styled("[canceled]", Style::default().fg(Color::DarkGray)),
         TransferState::Denied => Span::styled("[denied]", Style::default().fg(Color::Red)),
         TransferState::Failed(_) => Span::styled("[failed]", Style::default().fg(Color::Red)),
+        TransferState::Stopped => Span::styled("[stopped]", Style::default().fg(Color::DarkGray)),
     }
 }
 
@@ -257,8 +258,15 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
     // Always show at least one empty item if no messages
     let items = if items.is_empty() { vec![ListItem::new("")] } else { items };
 
-    let list = List::new(items).block(block);
-    f.render_widget(list, area);
+    let mut state = ListState::default();
+    if !messages.is_empty() {
+        state.select(Some(app.selected_message));
+    }
+
+    let list =
+        List::new(items).block(block).highlight_style(highlight_style()).highlight_symbol("> ");
+
+    f.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_log(f: &mut Frame, app: &App, area: Rect) {
@@ -283,9 +291,51 @@ fn draw_statusbar(f: &mut Frame, app: &App, area: Rect) {
         Some(InputMode::Message) => {
             format!(" Message: {}_", app.input_buf)
         }
-        None => " j/k: nav  Tab: pane  s: send file  m: message  a: accept  r: reject  p: pause  \
-                 x: stop  q: quit"
-            .to_string(),
+        None => {
+            let mut keys = vec!["j/k: nav", "Tab: pane", "q: quit", "s: send file", "m: message"];
+            match app.focus {
+                Focus::Remotes => {
+                    if let Some(remote) = app.current_remote() {
+                        if matches!(remote.state, RemoteState::Disconnected | RemoteState::Error(_))
+                        {
+                            keys.push("c: connect");
+                        }
+                    }
+                }
+                Focus::Transfers => {
+                    if let Some(transfer) = app.current_transfer() {
+                        match transfer.state {
+                            TransferState::WaitingPermission
+                                if matches!(transfer.kind, TransferKind::Incoming { .. }) =>
+                            {
+                                keys.push("a: accept");
+                                keys.push("r: reject");
+                            }
+                            TransferState::WaitingPermission => {
+                                keys.push("r: cancel");
+                            }
+                            TransferState::InProgress => {
+                                keys.push("x: stop");
+                            }
+                            TransferState::Failed(_)
+                            | TransferState::Completed
+                            | TransferState::Stopped
+                            | TransferState::Denied
+                            | TransferState::Canceled => {
+                                keys.push("del: delete");
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Focus::Messages => {
+                    if app.current_message().is_some() {
+                        keys.push("del: delete");
+                    }
+                }
+            }
+            keys.join("  ")
+        }
     };
 
     let style = match app.input_mode {
