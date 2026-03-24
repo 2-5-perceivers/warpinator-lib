@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 use tracing::{Instrument, field, instrument};
 
@@ -15,7 +16,7 @@ use crate::server::remote_manager::{RemoteManager, WarpEvent};
 use crate::server::transfers::transfer_sender;
 use crate::types::message::Message;
 use crate::types::remote::RemoteState;
-use crate::types::transfer::{Transfer, TransferKind, TransferState};
+use crate::types::transfer::{Transfer, TransferError, TransferKind, TransferState};
 
 const AVATAR_CHUNK_SIZE: usize = 1024 * 64; // 64KB
 
@@ -195,8 +196,10 @@ impl Warp for WarpServer {
             .await
             .ok_or_else(|| Status::not_found("Transfer not found"))?;
 
-        let source_paths = match &transfer.kind {
-            TransferKind::Outgoing { source_paths } => source_paths.clone(),
+        let (source_paths, cancellation_token) = match &transfer.kind {
+            TransferKind::Outgoing { source_paths, cancellation_token } => {
+                (source_paths.clone(), cancellation_token.clone())
+            }
             TransferKind::Incoming { .. } => {
                 return Err(Status::invalid_argument("Cannot start an incoming transfer"));
             }
@@ -217,18 +220,15 @@ impl Warp for WarpServer {
             transfer.uuid.clone(),
             source_paths,
             tx,
+            cancellation_token,
         ));
 
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
     #[instrument(skip_all, level = "debug", err(level = "warn"))]
-    async fn pause_transfer_op(
-        &self,
-        request: Request<OpInfo>,
-    ) -> Result<Response<VoidType>, Status> {
-        tracing::info!("[Warp] pause_transfer_op ident={}", request.into_inner().ident);
-        Ok(Response::new(VoidType::default()))
+    async fn pause_transfer_op(&self, _: Request<OpInfo>) -> Result<Response<VoidType>, Status> {
+        Err(Status::unimplemented("PauseTransferOp is not implemented"))
     }
 
     #[instrument(skip_all, level = "debug", err(level = "warn"))]
@@ -236,7 +236,40 @@ impl Warp for WarpServer {
         &self,
         request: Request<StopInfo>,
     ) -> Result<Response<VoidType>, Status> {
-        tracing::info!("[Warp] stop_transfer error={}", request.into_inner().error);
+        let req = request.into_inner();
+        let info = req.info.ok_or(Status::invalid_argument("Missing OpInfo"))?;
+
+        let transfer = self
+            .remote_manager
+            .transfer_by_timestamp(&info.ident, info.timestamp)
+            .await
+            .ok_or_else(|| Status::not_found("Transfer not found"))?;
+
+        let new_state = match &transfer.kind {
+            TransferKind::Outgoing { cancellation_token, .. } => {
+                cancellation_token.cancel();
+                if req.error {
+                    TransferState::Failed(TransferError::RemoteError)
+                } else {
+                    TransferState::Stopped
+                }
+            }
+            TransferKind::Incoming { .. } => {
+                if req.error {
+                    TransferState::Failed(TransferError::RemoteError)
+                } else {
+                    TransferState::Canceled
+                }
+            }
+        };
+
+        self.remote_manager
+            .update_transfer(&transfer.remote_uuid, &transfer.uuid, |t| {
+                t.state = new_state;
+            })
+            .await
+            .ok();
+
         Ok(Response::new(VoidType::default()))
     }
 
@@ -245,7 +278,31 @@ impl Warp for WarpServer {
         &self,
         request: Request<OpInfo>,
     ) -> Result<Response<VoidType>, Status> {
-        tracing::info!("[Warp] cancel_transfer_op_request ident={}", request.into_inner().ident);
+        let req = request.into_inner();
+
+        let transfer = self
+            .remote_manager
+            .transfer_by_timestamp(&req.ident, req.timestamp)
+            .await
+            .ok_or_else(|| Status::not_found("Transfer not found"))?;
+
+        if matches!(transfer.state, TransferState::WaitingPermission) {
+            let new_state = match transfer.kind {
+                TransferKind::Outgoing { .. } => TransferState::Denied,
+                TransferKind::Incoming { .. } => TransferState::Canceled,
+            };
+            self.remote_manager
+                .update_transfer(&transfer.remote_uuid, &transfer.uuid, |t| {
+                    t.state = new_state;
+                })
+                .await
+                .ok();
+        } else {
+            return Err(Status::failed_precondition(
+                "Can only cancel transfers that are waiting for permission",
+            ));
+        }
+
         Ok(Response::new(VoidType::default()))
     }
 

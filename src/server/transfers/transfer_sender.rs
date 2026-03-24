@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 
 use async_walkdir::WalkDir;
 use tokio::io::AsyncReadExt;
+use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tonic::Status;
 
 use crate::proto::{FileChunk, FileTime};
@@ -18,15 +20,23 @@ pub(crate) async fn send_stream(
     remote_uuid: String,
     transfer_uuid: String,
     source_paths: Vec<PathBuf>,
-    tx: tokio::sync::mpsc::Sender<Result<FileChunk, Status>>,
+    tx: Sender<Result<FileChunk, Status>>,
+    cancellation_token: CancellationToken,
 ) {
-    let result =
-        send_stream_inner(&remote_manager, &remote_uuid, &transfer_uuid, &source_paths, &tx).await;
+    let result = send_stream_inner(
+        &remote_manager,
+        &remote_uuid,
+        &transfer_uuid,
+        &source_paths,
+        &tx,
+        &cancellation_token,
+    )
+    .await;
 
     let final_state = match result {
         Ok(true) => TransferState::Completed,
-        Ok(false) => TransferState::Canceled,
-        Err(e) => TransferState::Failed(e),
+        Err(e) if !cancellation_token.is_cancelled() => TransferState::Failed(e),
+        _ => TransferState::Canceled,
     };
 
     remote_manager
@@ -44,11 +54,16 @@ async fn send_stream_inner(
     remote_uuid: &str,
     transfer_uuid: &str,
     source_paths: &[PathBuf],
-    tx: &tokio::sync::mpsc::Sender<Result<FileChunk, Status>>,
+    tx: &Sender<Result<FileChunk, Status>>,
+    cancellation_token: &CancellationToken,
 ) -> Result<bool, TransferError> {
     let mut speed = MovingAverageCalculator::new(30);
 
     for source in source_paths {
+        if cancellation_token.is_cancelled() {
+            return Ok(false);
+        }
+
         let base = source.parent().ok_or(TransferError::FailedToProcessFiles)?;
 
         let source_metadata =
@@ -64,6 +79,7 @@ async fn send_stream_inner(
                 source_metadata,
                 &mut speed,
                 tx,
+                cancellation_token,
             )
             .await?;
         } else if source_metadata.is_dir() {
@@ -83,6 +99,10 @@ async fn send_stream_inner(
             // Walk contents
             let mut walker = WalkDir::new(source);
             while let Some(entry) = walker.next().await {
+                if cancellation_token.is_cancelled() {
+                    return Ok(false);
+                }
+
                 let entry = entry.map_err(|_| TransferError::FailedToProcessFiles)?;
                 let path = entry.path();
                 let metadata = entry.metadata().await.map_err(|e| TransferError::from(e.kind()))?;
@@ -110,6 +130,7 @@ async fn send_stream_inner(
                         metadata,
                         &mut speed,
                         tx,
+                        cancellation_token,
                     )
                     .await?;
                 }
@@ -129,7 +150,8 @@ async fn send_file(
     transfer_uuid: &str,
     metadata: Metadata,
     speed: &mut MovingAverageCalculator,
-    tx: &tokio::sync::mpsc::Sender<Result<FileChunk, Status>>,
+    tx: &Sender<Result<FileChunk, Status>>,
+    cancellation_token: &CancellationToken,
 ) -> Result<(), TransferError> {
     let rel = path.strip_prefix(base).unwrap_or(path);
     let rel_str = rel.to_string_lossy().to_string();
@@ -146,6 +168,9 @@ async fn send_file(
     let mut last_chunk_time = std::time::Instant::now();
 
     loop {
+        if cancellation_token.is_cancelled() {
+            return Ok(());
+        }
         let n = file.read(&mut buffer).await.map_err(|e| TransferError::from(e.kind()))?;
         if n == 0 {
             break; // EOF

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use async_walkdir::WalkDir;
 use thiserror::Error;
 use tokio_stream::StreamExt;
+use tokio_util::sync::CancellationToken;
 
 use crate::proto::{OpInfo, TransferOpRequest};
 
@@ -31,6 +32,8 @@ pub enum TransferError {
     OutOfMemory,
     #[error("IO error during transfer: {0}")]
     IoError(IoErrorKind),
+    #[error("Transfer failed due an error on the other side")]
+    RemoteError,
 }
 
 impl From<IoErrorKind> for TransferError {
@@ -61,7 +64,9 @@ pub enum TransferState {
     Paused,
     /// Transfer is completed
     Completed,
-    /// Transfer is canceled
+    /// Transfer was stopped
+    Stopped,
+    /// Transfer was canceled by the sender
     Canceled,
     /// Transfer was denied by the other party
     Denied,
@@ -109,6 +114,7 @@ pub struct Transfer {
 pub enum TransferKind {
     Outgoing {
         source_paths: Vec<PathBuf>,
+        cancellation_token: CancellationToken,
     },
     Incoming {
         destination: PathBuf,
@@ -128,7 +134,11 @@ pub enum SourcePathError {
 }
 
 impl Transfer {
-    pub async fn new_outgoing(remote_uuid: String, source_paths: Vec<PathBuf>) -> Self {
+    pub async fn new_outgoing(
+        remote_uuid: String,
+        source_paths: Vec<PathBuf>,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         Transfer {
             uuid: uuid::Uuid::new_v4().to_string(),
             remote_uuid,
@@ -141,7 +151,7 @@ impl Transfer {
             entry_names: vec![],
             single_name: None,
             single_mime_type: None,
-            kind: TransferKind::Outgoing { source_paths },
+            kind: TransferKind::Outgoing { source_paths, cancellation_token },
         }
     }
 

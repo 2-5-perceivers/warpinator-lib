@@ -192,7 +192,9 @@ pub(crate) async fn receive_stream(
 
     remote_manager
         .update_transfer(&remote_uuid, &transfer_uuid, |t| {
-            t.state = final_state;
+            if !matches!(t.state, TransferState::Stopped | TransferState::Canceled) {
+                t.state = final_state;
+            }
             t.bytes_per_second = 0;
         })
         .await

@@ -14,7 +14,7 @@ use tracing::instrument;
 
 use crate::config::protocol::ProtocolConfig;
 use crate::proto::warp_client::WarpClient;
-use crate::proto::{LookupName, OpInfo};
+use crate::proto::{LookupName, OpInfo, StopInfo};
 use crate::server::authenticator::{Authenticator, CertUnboxError};
 use crate::server::remote_manager::RemoteManager;
 use crate::server::transfers::transfer_receiver;
@@ -397,7 +397,10 @@ impl RemoteWorker {
         let client = client.as_ref().ok_or("No client")?;
         let mut client = client.clone();
 
-        let mut transfer = Transfer::new_outgoing(self.uuid.clone(), source_paths.clone()).await;
+        let transfer_token = self.cancellation_token.child_token();
+
+        let mut transfer =
+            Transfer::new_outgoing(self.uuid.clone(), source_paths.clone(), transfer_token).await;
 
         // Add transfer in initializing state before processing paths, so it appears in
         // UI immediately
@@ -468,7 +471,7 @@ impl RemoteWorker {
 
         let remote_timestamp = match transfer.kind {
             TransferKind::Incoming { destination: _, remote_timestamp } => remote_timestamp,
-            TransferKind::Outgoing { source_paths: _ } => {
+            TransferKind::Outgoing { .. } => {
                 return Err("Cannot accept an outgoing transfer".into());
             }
         };
@@ -501,6 +504,96 @@ impl RemoteWorker {
             destination,
             self.cancellation_token.child_token(),
         ));
+
+        Ok(())
+    }
+
+    /// Stop an in-progress transfer. Don't use on transfers that are not in
+    /// progress
+    pub async fn stop_transfer(
+        &self,
+        transfer_uuid: &str,
+        error: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let client = self.client.read().await;
+        let client = client.as_ref().ok_or("No client")?;
+        let mut client = client.clone();
+
+        let transfer = self
+            .remote_manager
+            .transfer(self.uuid.as_str(), transfer_uuid)
+            .await
+            .ok_or("Transfer not found")?;
+
+        let timestamp = match transfer.kind {
+            TransferKind::Incoming { remote_timestamp, .. } => remote_timestamp,
+            TransferKind::Outgoing { cancellation_token, .. } => {
+                cancellation_token.cancel();
+                transfer.timestamp
+            }
+        };
+
+        client
+            .stop_transfer(StopInfo {
+                info: Some(OpInfo {
+                    ident: self.server_fullname.clone(),
+                    timestamp,
+                    readable_name: String::new(),
+                    use_compression: false,
+                }),
+                error,
+            })
+            .await?;
+
+        self.remote_manager
+            .update_transfer(&self.uuid, transfer_uuid, |t| {
+                t.state = TransferState::Stopped;
+            })
+            .await?;
+
+        Ok(())
+    }
+
+    /// Reject an incoming transfer or cancel an outgoing one. Use only on
+    /// transfers waiting for permission
+    pub async fn cancel_transfer(
+        &self,
+        transfer_uuid: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let client = self.client.read().await;
+        let client = client.as_ref().ok_or("No client")?;
+        let mut client = client.clone();
+
+        let transfer = self
+            .remote_manager
+            .transfer(self.uuid.as_str(), transfer_uuid)
+            .await
+            .ok_or("Transfer not found")?;
+
+        let (new_state, timestamp) = match transfer.kind {
+            TransferKind::Incoming { remote_timestamp, .. } => {
+                (TransferState::Denied, remote_timestamp)
+            }
+            TransferKind::Outgoing { cancellation_token, .. } => {
+                cancellation_token.cancel();
+                (TransferState::Canceled, transfer.timestamp)
+            }
+        };
+
+        client
+            .cancel_transfer_op_request(OpInfo {
+                ident: self.server_fullname.clone(),
+                timestamp,
+                readable_name: String::new(),
+                use_compression: false,
+            })
+            .await?;
+
+        self.remote_manager
+            .update_transfer(&self.uuid, transfer_uuid, |t| {
+                t.state = new_state;
+            })
+            .await?;
 
         Ok(())
     }
