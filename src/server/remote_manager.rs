@@ -16,6 +16,7 @@ use crate::types::transfer::Transfer;
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum WarpEvent {
     RemoteAdded(String),             // uuid
     RemoteUpdated(String),           // uuid

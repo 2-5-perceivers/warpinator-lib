@@ -2,12 +2,15 @@ use uuid::Uuid;
 
 use crate::proto::TextMessage;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Clone, Debug)]
 pub enum Direction {
     Sent,
     Received,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Debug)]
 pub struct Message {
     pub uuid: String,

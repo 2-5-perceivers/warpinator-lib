@@ -6,6 +6,8 @@ use thiserror::Error;
 use crate::types::message::Message;
 use crate::types::transfer::Transfer;
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
 pub enum RemoteConnectionError {
     #[error("SSL connection failed")]
@@ -18,6 +20,12 @@ pub enum RemoteConnectionError {
     DuplexError,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(rename_all = "snake_case"),
+    serde(tag = "type", content = "content")
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RemoteState {
     Error(RemoteConnectionError),
@@ -27,6 +35,7 @@ pub enum RemoteState {
     Connected,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Debug)]
 pub struct Remote {
     pub uuid: String,
@@ -52,7 +61,8 @@ pub struct Remote {
     /// Whether the remote's mdns service is currently available
     pub service_available: bool,
     /// Unboxed PEM certificate for the remote
-    pub cert_pem: Option<Vec<u8>>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) cert_pem: Option<Vec<u8>>,
 }
 
 impl Remote {

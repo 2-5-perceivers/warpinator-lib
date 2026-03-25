@@ -3044,6 +3044,7 @@ dependencies = [
  "rand 0.10.0",
  "ratatui",
  "rsa",
+ "serde",
  "sha2",
  "thiserror 2.0.18",
  "tokio",

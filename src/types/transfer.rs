@@ -8,6 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::proto::{OpInfo, TransferOpRequest};
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Error, Clone, Debug)]
 pub enum TransferError {
     #[error("Connection to remote was lost")]
@@ -17,7 +19,7 @@ pub enum TransferError {
     #[error("Failed to process source files")]
     FailedToProcessFiles,
     #[error("Failed to start transfer: {0}")]
-    FailedToStartTransfer(tonic::Status),
+    FailedToStartTransfer(#[cfg_attr(feature = "serde", serde(skip))] tonic::Status),
     #[error("Received an unsafe file path from remote")]
     UnsafePath,
     #[error("Source files not found")]
@@ -31,7 +33,7 @@ pub enum TransferError {
     #[error("Out of memory")]
     OutOfMemory,
     #[error("IO error during transfer: {0}")]
-    IoError(IoErrorKind),
+    IoError(#[cfg_attr(feature = "serde", serde(skip))] IoErrorKind),
     #[error("Transfer failed due an error on the other side")]
     RemoteError,
 }
@@ -52,6 +54,8 @@ impl From<IoErrorKind> for TransferError {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Clone, Debug)]
 pub enum TransferState {
     /// New outgoing transfer
@@ -74,6 +78,7 @@ pub enum TransferState {
     Failed(TransferError),
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Debug)]
 pub struct Transfer {
     /// Unique identifier for this transfer
@@ -110,10 +115,12 @@ pub struct Transfer {
     pub kind: TransferKind,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 #[derive(Clone, Debug)]
 pub enum TransferKind {
     Outgoing {
         source_paths: Vec<PathBuf>,
+        #[cfg_attr(feature = "serde", serde(skip))]
         cancellation_token: CancellationToken,
     },
     Incoming {
@@ -121,6 +128,7 @@ pub enum TransferKind {
         /// The timestamp of the transfer on the remote side. This is used as id
         /// for the transfer in the protocol. Ironically, this might not be a
         /// timestamp
+        #[cfg_attr(feature = "serde", serde(skip))]
         remote_timestamp: u64,
     },
 }

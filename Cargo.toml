@@ -27,6 +27,7 @@ chrono = "0.4.44"
 bitflags = "2.11.0"
 async-walkdir = "2.1.0"
 mime_guess = "2.0.5"
+serde = { version = "1.0.228", features = ["derive"], optional = true }
 
 [build-dependencies]
 tonic-prost-build = "0.14.5"
@@ -41,3 +42,4 @@ bytesize = "2.3.1"
 [features]
 default = ["messaging"]
 messaging = []
+serde = ["dep:serde"]
