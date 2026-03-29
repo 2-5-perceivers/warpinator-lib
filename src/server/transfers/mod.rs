@@ -42,10 +42,24 @@ impl MovingAverageCalculator {
 
     /// Push a new chunk size, returns (avg_bytes_per_sec)
     pub fn push(&mut self, bytes: u64, elapsed_secs: f64) -> u64 {
+        if elapsed_secs <= 0.0 {
+            return self.current_average();
+        }
+
         let bps = (bytes as f64 / elapsed_secs) as u64;
         self.samples.push_back(bps);
-        let avg_bps = self.samples.iter().sum::<u64>() / self.samples.len() as u64;
 
-        avg_bps
+        if self.samples.len() > self.window {
+            self.samples.pop_front();
+        }
+
+        self.current_average()
+    }
+
+    fn current_average(&self) -> u64 {
+        if self.samples.is_empty() {
+            return 0;
+        }
+        self.samples.iter().sum::<u64>() / self.samples.len() as u64
     }
 }
