@@ -60,8 +60,7 @@ impl io::Write for TuiLogWriter {
 async fn main() -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<AppEvent>(512);
 
-    let group_code =
-        env::var("WARPINATOR_GROUP_CODE").unwrap_or_else(|_| "Warpinator-TUI".to_string());
+    let group_code = env::var("WARPINATOR_GROUP_CODE").unwrap_or_else(|_| "Warpinator".to_string());
     let display_name =
         env::var("WARPINATOR_DISPLAY_NAME").unwrap_or_else(|_| "Warpinator RS".to_string());
     let picture = env::var("WARPINATOR_PICTURE").ok().and_then(|path| fs::read(path).ok());
@@ -155,7 +154,7 @@ async fn main() -> Result<()> {
                 .with_ansi(false)
                 .with_span_events(FmtSpan::CLOSE),
         )
-        .with(tracing_subscriber::filter::LevelFilter::INFO)
+        .with(tracing_subscriber::filter::LevelFilter::DEBUG)
         .init();
 
     enable_raw_mode()?;

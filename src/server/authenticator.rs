@@ -1,5 +1,6 @@
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::time::{Duration, SystemTime};
 
 use crypto_secretbox::aead::{Aead, KeyInit};
 use crypto_secretbox::{AeadCore, Key, Nonce, XSalsa20Poly1305};
@@ -17,7 +18,7 @@ use x509_cert::ext::pkix::name::GeneralName;
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
 use x509_cert::spki::SubjectPublicKeyInfoOwned;
-use x509_cert::time::Validity;
+use x509_cert::time::{Time, Validity};
 
 #[derive(Error, Debug)]
 pub enum CertUnboxError {
@@ -124,7 +125,13 @@ impl Authenticator {
 
         let subject = Name::from_str(&format!("CN={}", hostname))?;
 
-        let validity = Validity::from_now(std::time::Duration::from_secs(60 * 60 * 24 * 31))?;
+        let not_before_sys = SystemTime::now() - Duration::from_secs(60 * 60 * 24);
+        let not_after_sys = SystemTime::now() + Duration::from_secs(60 * 60 * 24 * 30);
+        let not_before = Time::try_from(not_before_sys)?;
+        let not_after = Time::try_from(not_after_sys)?;
+
+        let validity = Validity { not_before, not_after };
+
         let serial = SerialNumber::from(rand::random::<u64>());
 
         let spki = SubjectPublicKeyInfoOwned::from_key(private_key.to_public_key())?;
