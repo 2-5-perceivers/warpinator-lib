@@ -7,14 +7,17 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use thiserror::Error;
 use tokio::sync::{RwLock, watch};
+use tokio::time::error::Elapsed;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
+use tonic::Status;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 use tracing::instrument;
 
 use crate::config::protocol::ProtocolConfig;
 use crate::proto::warp_client::WarpClient;
 use crate::proto::{LookupName, OpInfo, StopInfo};
+use crate::remote_manager::UpdateError;
 use crate::server::authenticator::{Authenticator, CertUnboxError};
 use crate::server::remote_manager::RemoteManager;
 use crate::server::transfers::transfer_receiver;
@@ -48,6 +51,30 @@ pub enum ConnectRemoteError {
     DuplexError(Box<dyn std::error::Error + Send + Sync>),
     #[error("Remote worker not found")]
     RemoteWorkerNotFound,
+}
+
+#[derive(Error, Debug)]
+pub enum RemoteWorkerError {
+    #[error("Corresponding remote was not found")]
+    RemoteNotFound,
+    #[error("Transfer was not found")]
+    TransferNotFound,
+    #[error("gRPC client was not initialized yet")]
+    NoClient,
+    #[error("gRPC call failed: {0}")]
+    RemoteFailed(#[from] Status),
+    #[error("Operation failed: {0}")]
+    OperationFailed(
+        #[from]
+        #[source]
+        Box<dyn std::error::Error + Send + Sync>,
+    ),
+    #[error("Operation timed out: {0}")]
+    OperationTimedOut(#[from] Elapsed),
+    #[error("Operation is not permitted: {0}")]
+    IllegalOperation(String),
+    #[error(transparent)]
+    UpdateFailed(#[from] UpdateError),
 }
 
 type WarpChannel = WarpClient<Channel>;
@@ -191,7 +218,7 @@ impl RemoteWorker {
             Err(e) => {
                 tracing::warn!(uuid = %self.uuid, "Failed to build TLS channel: {:#?}", e);
                 self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await;
-                return Err(ConnectRemoteError::TlsError(e));
+                return Err(ConnectRemoteError::TlsError(Box::new(e)));
             }
         };
 
@@ -203,15 +230,14 @@ impl RemoteWorker {
             tracing::warn!(uuid = %self.uuid, "Initial ping failed: {}", e);
             self.clear_channel().await;
             self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await;
-            return Err(ConnectRemoteError::PingError(e));
+            return Err(ConnectRemoteError::PingError(Box::new(e)));
         }
 
         self.set_state(RemoteState::AwaitingDuplex).await;
         if let Err(e) = self.wait_for_duplex().await {
-            tracing::warn!(uuid = %self.uuid, "Duplex failed: {}", e);
             self.clear_channel().await;
             self.set_state(RemoteState::Error(RemoteConnectionError::DuplexError)).await;
-            return Err(ConnectRemoteError::DuplexError(e));
+            return Err(ConnectRemoteError::DuplexError(Box::new(e)));
         }
 
         self.set_state(RemoteState::Connected).await;
@@ -241,7 +267,14 @@ impl RemoteWorker {
         let remote =
             self.remote_manager.remote(&self.uuid).await.ok_or(ReceiveCertError::NoRemote)?;
 
-        let addr = format!("http://{}:{}", remote.ip, remote.auth_port);
+        let addr = match remote.ip {
+            IpAddr::V4(ip) => {
+                format!("http://{}:{}", ip.to_string(), remote.auth_port)
+            }
+            IpAddr::V6(ipv6) => {
+                format!("http://[{}]:{}", ipv6.to_string(), remote.auth_port)
+            }
+        };
         let reg_channel = Channel::from_shared(addr)
             .map_err(|e| ReceiveCertError::RegisterServiceError(Box::from(e)))?
             .connect_timeout(self.protocol_config.connect_timeout)
@@ -290,28 +323,39 @@ impl RemoteWorker {
         Ok(cert_pem)
     }
 
-    async fn build_channel(
-        &self,
-        cert_pem: &[u8],
-    ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
-        let remote = self.remote_manager.remote(&self.uuid).await.ok_or("Remote not found")?;
+    async fn build_channel(&self, cert_pem: &[u8]) -> Result<Channel, RemoteWorkerError> {
+        let remote = self
+            .remote_manager
+            .remote(&self.uuid)
+            .await
+            .ok_or(RemoteWorkerError::RemoteNotFound)?;
 
         let cert = Certificate::from_pem(cert_pem);
         let tls = ClientTlsConfig::new().ca_certificate(cert).domain_name(remote.ip.to_string());
 
-        let addr = format!("https://{}:{}", remote.ip, remote.port);
-        let channel = Channel::from_shared(addr)?
-            .tls_config(tls)?
+        let addr = match remote.ip {
+            IpAddr::V4(ip) => {
+                format!("https://{}:{}", ip.to_string(), remote.port)
+            }
+            IpAddr::V6(ipv6) => {
+                format!("https://[{}]:{}", ipv6.to_string(), remote.port)
+            }
+        };
+        let channel = Channel::from_shared(addr)
+            .map_err(Box::from)?
+            .tls_config(tls)
+            .map_err(Box::from)?
             .connect_timeout(self.protocol_config.connect_timeout)
             .connect()
-            .await?;
+            .await
+            .map_err(Box::from)?;
 
         Ok(channel)
     }
 
-    async fn ping(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn ping(&self) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         tokio::time::timeout(
@@ -326,9 +370,9 @@ impl RemoteWorker {
         Ok(())
     }
 
-    async fn wait_for_duplex(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn wait_for_duplex(&self) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         let response = tokio::time::timeout(
@@ -341,15 +385,15 @@ impl RemoteWorker {
         .await??;
 
         if !response.into_inner().response {
-            return Err("Duplex not established".into());
+            return Err(RemoteWorkerError::OperationFailed("Duplex not established".into()));
         }
 
         Ok(())
     }
 
-    async fn fetch_machine_info(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn fetch_machine_info(&self) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         let info = client.get_remote_machine_info(LookupName::default()).await?.into_inner();
@@ -365,9 +409,9 @@ impl RemoteWorker {
         Ok(())
     }
 
-    async fn fetch_avatar(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn fetch_avatar(&self) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         let mut stream =
@@ -392,9 +436,9 @@ impl RemoteWorker {
     pub async fn send_transfer_request(
         &self,
         source_paths: Vec<PathBuf>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         let transfer_token = self.cancellation_token.child_token();
@@ -431,18 +475,15 @@ impl RemoteWorker {
                         t.state = TransferState::Failed(TransferError::FailedToProcessFiles);
                     })
                     .await?;
-                Err(Box::new(e))
+                Err(RemoteWorkerError::OperationFailed(Box::new(e)))
             }
         }
     }
 
     #[cfg(feature = "messaging")]
-    pub async fn send_message(
-        &self,
-        message: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn send_message(&self, message: &str) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         let message = Message::new(self.uuid.clone(), Direction::Sent, message.to_string());
@@ -458,21 +499,23 @@ impl RemoteWorker {
         &self,
         transfer_uuid: &str,
         destination: P,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         let transfer = self
             .remote_manager
             .transfer(self.uuid.as_str(), transfer_uuid)
             .await
-            .ok_or("Transfer not found")?;
+            .ok_or(RemoteWorkerError::TransferNotFound)?;
 
         let remote_timestamp = match transfer.kind {
             TransferKind::Incoming { destination: _, remote_timestamp } => remote_timestamp,
             TransferKind::Outgoing { .. } => {
-                return Err("Cannot accept an outgoing transfer".into());
+                return Err(RemoteWorkerError::IllegalOperation(
+                    "Cannot accept an outgoing transfer".into(),
+                ));
             }
         };
 
@@ -514,16 +557,16 @@ impl RemoteWorker {
         &self,
         transfer_uuid: &str,
         error: bool,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         let transfer = self
             .remote_manager
             .transfer(self.uuid.as_str(), transfer_uuid)
             .await
-            .ok_or("Transfer not found")?;
+            .ok_or(RemoteWorkerError::TransferNotFound)?;
 
         let timestamp = match transfer.kind {
             TransferKind::Incoming { remote_timestamp, .. } => remote_timestamp,
@@ -556,19 +599,16 @@ impl RemoteWorker {
 
     /// Reject an incoming transfer or cancel an outgoing one. Use only on
     /// transfers waiting for permission
-    pub async fn cancel_transfer(
-        &self,
-        transfer_uuid: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn cancel_transfer(&self, transfer_uuid: &str) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
-        let client = client.as_ref().ok_or("No client")?;
+        let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
         let mut client = client.clone();
 
         let transfer = self
             .remote_manager
             .transfer(self.uuid.as_str(), transfer_uuid)
             .await
-            .ok_or("Transfer not found")?;
+            .ok_or(RemoteWorkerError::TransferNotFound)?;
 
         let (new_state, timestamp) = match transfer.kind {
             TransferKind::Incoming { remote_timestamp, .. } => {
