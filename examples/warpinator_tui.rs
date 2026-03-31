@@ -17,7 +17,6 @@ use ratatui::crossterm::terminal::{
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tui::app::{App, AppEvent, Focus, InputMode};
@@ -148,13 +147,8 @@ async fn main() -> Result<()> {
 
     let tui_writer = TuiLogWriter { tx: tx.clone() };
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(tui_writer)
-                .with_ansi(false)
-                .with_span_events(FmtSpan::CLOSE),
-        )
-        .with(tracing_subscriber::filter::LevelFilter::DEBUG)
+        .with(tracing_subscriber::fmt::layer().with_writer(tui_writer).with_ansi(false))
+        .with(tracing_subscriber::filter::LevelFilter::WARN)
         .init();
 
     enable_raw_mode()?;
