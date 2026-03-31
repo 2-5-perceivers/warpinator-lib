@@ -87,10 +87,9 @@ impl DiscoveryService {
         span.record("service_name", name);
 
         let addresses = resolved_service.get_addresses();
-        let address_option = addresses
-            .iter()
-            .find(|addr| addr.is_ipv6())
-            .or_else(|| addresses.iter().find(|addr| addr.is_ipv4()));
+        let address_option = addresses.iter().find(|addr| addr.is_ipv4());
+        // .find(|addr| addr.is_ipv6())
+        // .or_else(|| addresses.iter().find(|addr| addr.is_ipv4()));
         let address =
             address_option.ok_or(DiscoveryNewServiceError::NoValidIpAddress)?.to_ip_addr();
 
