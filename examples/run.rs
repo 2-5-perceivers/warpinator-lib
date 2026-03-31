@@ -1,3 +1,6 @@
+use std::{env, fs};
+
+use sha2::{Digest, Sha256};
 use tracing_subscriber::fmt::format::FmtSpan;
 use warpinator_lib::config::user::UserConfig;
 use warpinator_lib::remote_manager::WarpEvent;
@@ -11,15 +14,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Warpinator starting...");
 
-    let user_config = UserConfig::builder()
+    let group_code = env::var("WARPINATOR_GROUP_CODE").unwrap_or_else(|_| "Warpinator".to_string());
+    let display_name =
+        env::var("WARPINATOR_DISPLAY_NAME").unwrap_or_else(|_| "Warpinator RS".to_string());
+    let picture = env::var("WARPINATOR_PICTURE").ok().and_then(|path| fs::read(path).ok());
+    let username = env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .or_else(|_| env::var("WARPINATOR_USERNAME"))
+        .unwrap_or_else(|_| "warpinator-rs".to_string());
+    let hostname = hostname::get()
+        .ok()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|| "warpinator".to_string());
+    let mut hasher = Sha256::new();
+    hasher.update(hostname.as_bytes());
+    hasher.update(username.as_bytes());
+    hasher.update(group_code.as_bytes());
+    hasher.update(display_name.as_bytes());
+    let hash = hasher.finalize();
+    let service_id = format!(
+        "WARPINATOR-{:X}",
+        u64::from_be_bytes([
+            hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]
+        ])
+    );
+
+    let mut user_config_builder = UserConfig::builder()
         .default_bind_addr_v4()
         .default_bind_addr_v6()
-        .default_hostname()
-        .build();
+        .hostname(&hostname)
+        .username(&username)
+        .display_name(&display_name)
+        .group_code(&group_code);
+    if let Some(pic) = picture {
+        user_config_builder = user_config_builder.picture(&pic);
+    }
+    let user_config = user_config_builder.build();
 
     let server = warpinator_lib::WarpinatorServer::builder()
         .user_config(user_config)
-        .service_name("WARPINATOR-0HT5YH6")
+        .service_name(service_id.as_str())
         .build()?;
 
     // grab subscriber before serve consumes the server
