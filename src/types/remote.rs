@@ -47,12 +47,15 @@ pub struct Remote {
     pub display_name: String,
     pub username: String,
     pub hostname: String,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub picture: Option<Vec<u8>>,
 
     pub state: RemoteState,
 
+    #[cfg_attr(feature = "serde", serde(skip))]
     #[cfg(feature = "messaging")]
     pub messages: Vec<Message>,
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub transfers: Vec<Transfer>,
 
     /// Whether the remote's service is static (i.e. registered) or dynamic
