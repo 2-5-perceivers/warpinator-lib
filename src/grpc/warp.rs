@@ -116,7 +116,7 @@ impl Warp for WarpServer {
         _request: Request<LookupName>,
     ) -> Result<Response<RemoteMachineInfo>, Status> {
         Ok(Response::new(RemoteMachineInfo {
-            display_name: self.user_config.display_name.clone(),
+            display_name: self.user_config.display_name.read().await.clone(),
             user_name: self.user_config.username.clone(),
             feature_flags: self.protocol_config.features.bits(),
         }))
@@ -131,13 +131,13 @@ impl Warp for WarpServer {
 
         let picture = self.user_config.picture.clone();
 
-        if picture.is_none() {
+        if picture.read().await.is_none() {
             return Ok(Response::new(ReceiverStream::new(rx)));
         }
 
         tokio::spawn(
             async move {
-                if let Some(bytes) = picture.as_deref() {
+                if let Some(bytes) = picture.read().await.clone() {
                     for chunk in bytes.chunks(AVATAR_CHUNK_SIZE) {
                         if tx
                             .send(Ok(RemoteMachineAvatar { avatar_chunk: chunk.to_vec() }))
@@ -333,7 +333,7 @@ impl Warp for WarpServer {
     }
 
     #[instrument(skip_all, level = "debug", err(level = "warn"))]
-    async fn ping(&self, request: Request<LookupName>) -> Result<Response<VoidType>, Status> {
+    async fn ping(&self, _: Request<LookupName>) -> Result<Response<VoidType>, Status> {
         Ok(Response::new(VoidType::default()))
     }
 }

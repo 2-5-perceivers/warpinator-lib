@@ -1,6 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
+use tokio::sync::RwLock;
+
 const DEFAULT_WARP_PORT: u16 = 42000;
 const DEFAULT_REG_PORT: u16 = 42001;
 const DEFAULT_GROUP_CODE: &str = "Warpinator";
@@ -113,8 +115,10 @@ impl UserConfigBuilder {
             group_code: self.group_code.unwrap_or_else(|| DEFAULT_GROUP_CODE.to_string()),
             hostname: self.hostname.unwrap_or_else(|| DEFAULT_HOSTNAME.to_string()),
             username: self.username.unwrap_or_else(|| DEFAULT_USERNAME.to_string()),
-            display_name: self.display_name.unwrap_or_else(|| DEFAULT_DISPLAY_NAME.to_string()),
-            picture: self.picture.map(Arc::new),
+            display_name: Arc::new(RwLock::new(
+                self.display_name.unwrap_or_else(|| DEFAULT_DISPLAY_NAME.to_string()),
+            )),
+            picture: Arc::new(RwLock::new(self.picture)),
         }
     }
 }
@@ -128,15 +132,25 @@ pub struct UserConfig {
     pub group_code: String,
     pub hostname: String,
     pub username: String,
-    pub display_name: String,
+    pub display_name: Arc<RwLock<String>>,
     /// The user's picture as a byte vector. The image format is PNG. This is
     /// optional and can be None if the user does not want to set a picture.
-    pub picture: Option<Arc<Vec<u8>>>,
+    pub picture: Arc<RwLock<Option<Vec<u8>>>>,
 }
 
 impl UserConfig {
     pub fn builder() -> UserConfigBuilder {
         UserConfigBuilder::new()
+    }
+
+    pub async fn set_display_name(&self, display_name: &str) {
+        let mut display_name_guard = self.display_name.write().await;
+        *display_name_guard = display_name.to_string();
+    }
+
+    pub async fn set_picture(&self, picture: Option<&[u8]>) {
+        let mut picture_guard = self.picture.write().await;
+        *picture_guard = picture.map(|p| p.to_vec());
     }
 }
 
@@ -150,8 +164,8 @@ impl Default for UserConfig {
             group_code: DEFAULT_GROUP_CODE.to_string(),
             hostname: DEFAULT_HOSTNAME.to_string(),
             username: DEFAULT_USERNAME.to_string(),
-            display_name: DEFAULT_DISPLAY_NAME.to_string(),
-            picture: None,
+            display_name: Arc::new(RwLock::new(DEFAULT_DISPLAY_NAME.to_string())),
+            picture: Arc::new(RwLock::new(None)),
         }
     }
 }
