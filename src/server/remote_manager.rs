@@ -252,6 +252,16 @@ impl RemoteManager {
     }
 
     #[cfg(feature = "messaging")]
+    pub async fn message(&self, remote_uuid: &str, message_uuid: &str) -> Option<Message> {
+        self.inner
+            .remotes
+            .read()
+            .await
+            .get(remote_uuid)
+            .and_then(|r| r.messages.iter().find(|m| m.uuid == message_uuid).cloned())
+    }
+
+    #[cfg(feature = "messaging")]
     pub async fn messages(&self, remote_uuid: &str) -> Option<Vec<Message>> {
         self.inner.remotes.read().await.get(remote_uuid).map(|r| r.messages.clone())
     }
