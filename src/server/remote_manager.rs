@@ -42,6 +42,8 @@ pub enum UpdateError {
     NotFound,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Error, Debug)]
 pub enum ManualConnectionError {
     #[error("Invalid URL")]

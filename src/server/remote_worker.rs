@@ -39,16 +39,20 @@ pub enum ReceiveCertError {
     Offline,
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Error, Debug)]
 pub enum ConnectRemoteError {
     #[error("Failed to receive certificate: {0}")]
-    CertificateError(ReceiveCertError),
+    CertificateError(#[cfg_attr(feature = "serde", serde(skip))] ReceiveCertError),
     #[error("Failed to build TLS channel: {0}")]
-    TlsError(Box<dyn std::error::Error + Send + Sync>),
+    TlsError(#[cfg_attr(feature = "serde", serde(skip))] Box<dyn std::error::Error + Send + Sync>),
     #[error("Ping failed: {0}")]
-    PingError(Box<dyn std::error::Error + Send + Sync>),
+    PingError(#[cfg_attr(feature = "serde", serde(skip))] Box<dyn std::error::Error + Send + Sync>),
     #[error("Duplex failed: {0}")]
-    DuplexError(Box<dyn std::error::Error + Send + Sync>),
+    DuplexError(
+        #[cfg_attr(feature = "serde", serde(skip))] Box<dyn std::error::Error + Send + Sync>,
+    ),
     #[error("Remote worker not found")]
     RemoteWorkerNotFound,
 }
