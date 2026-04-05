@@ -60,12 +60,10 @@ impl WarpinatorServerBuilder {
             cancellation_token.clone(),
             authenticator.clone(),
             protocol_config.clone(),
-            user_config.hostname.clone(),
-            IpAddr::from(
-                user_config.bind_addr_v4.ok_or("One IP address (IPv4 or IPv6) is required")?,
-            ),
+            user_config.clone(),
             service_name.clone(),
-        );
+        )
+        .ok_or("Failed to create remote manager")?;
 
         Ok(WarpinatorServer {
             user_config,

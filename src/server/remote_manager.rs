@@ -1,17 +1,24 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use thiserror::Error;
 use tokio::sync::{RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
+use tonic::Code;
+use tonic::transport::Channel;
+use tracing::instrument;
 
 use crate::config::protocol::ProtocolConfig;
+use crate::config::user::UserConfig;
+use crate::proto::ServiceRegistration;
+use crate::server::SERVICE_API_VERSION;
 use crate::server::authenticator::Authenticator;
-use crate::server::remote_worker::RemoteWorker;
+use crate::server::remote_worker::{ConnectRemoteError, RemoteWorker};
 #[cfg(feature = "messaging")]
 use crate::types::message::Message;
-use crate::types::remote::Remote;
+use crate::types::remote::{Remote, RemoteState};
 use crate::types::transfer::Transfer;
 
 #[non_exhaustive]
@@ -35,6 +42,26 @@ pub enum UpdateError {
     NotFound,
 }
 
+#[derive(Error, Debug)]
+pub enum ManualConnectionError {
+    #[error("Invalid URL")]
+    InvalidUrl,
+    #[error("Failed to register with remote")]
+    FailedToRegister,
+    #[error("Remote is unavailable")]
+    Unavailable,
+    #[error("Remote had an internal error")]
+    RemoteInternal,
+    #[error("Remote does not support manual connections")]
+    RemoteUnimplemented,
+    #[error("Connecting already in progress")]
+    AlreadyConnecting,
+    #[error("Already connected")]
+    AlreadyConnected,
+    #[error(transparent)]
+    FailedToConnect(ConnectRemoteError),
+}
+
 #[derive(Debug)]
 pub(crate) struct RemoteManagerInner {
     remotes: RwLock<HashMap<String, Remote>>,
@@ -51,6 +78,7 @@ pub(crate) struct RemoteManagerInner {
 #[derive(Clone, Debug)]
 pub struct RemoteManager {
     inner: Arc<RemoteManagerInner>,
+    registration_message: ServiceRegistration,
 }
 
 impl RemoteManager {
@@ -58,10 +86,9 @@ impl RemoteManager {
         cancellation_token: CancellationToken,
         authenticator: Arc<Authenticator>,
         protocol_config: ProtocolConfig,
-        server_hostname: String,
-        server_ip: IpAddr,
+        user_config: UserConfig,
         server_fullname: String,
-    ) -> Self {
+    ) -> Option<Self> {
         let (tx, _) = broadcast::channel(64);
         let inner = Arc::new(RemoteManagerInner {
             remotes: RwLock::new(HashMap::new()),
@@ -70,11 +97,22 @@ impl RemoteManager {
             root_token: cancellation_token,
             authenticator,
             protocol_config,
-            server_hostname,
-            server_ip,
-            server_fullname,
+            server_hostname: user_config.hostname.clone(),
+            server_ip: IpAddr::from(user_config.bind_addr_v4?),
+            server_fullname: server_fullname.clone(),
         });
-        Self { inner }
+        Some(Self {
+            inner,
+            registration_message: ServiceRegistration {
+                service_id: server_fullname,
+                ip: user_config.bind_addr_v4?.to_string(),
+                port: user_config.port as u32,
+                hostname: user_config.hostname.clone(),
+                api_version: SERVICE_API_VERSION as u32,
+                auth_port: user_config.reg_port as u32,
+                ipv6: "".to_string(),
+            },
+        })
     }
 
     pub(crate) async fn add_remote(&self, remote: Remote) -> Arc<RemoteWorker> {
@@ -207,6 +245,82 @@ impl RemoteManager {
             return Ok(());
         }
         Err(UpdateError::NotFound)
+    }
+
+    #[instrument(skip(self), level = "info", err)]
+    pub async fn manual_connection(&self, url: &str) -> Result<(), ManualConnectionError> {
+        let sep = url.rfind(":").ok_or(ManualConnectionError::InvalidUrl)?;
+        let ip = &url[..sep];
+        let port = &url[sep + 1..];
+
+        let reg_channel = Channel::from_shared(format!("http://{}:{}", ip, port))
+            .map_err(|_| ManualConnectionError::FailedToRegister)?
+            .connect_timeout(self.inner.protocol_config.connect_timeout)
+            .connect()
+            .await
+            .map_err(|_| ManualConnectionError::FailedToRegister)?;
+
+        let mut reg_client =
+            crate::proto::warp_registration_client::WarpRegistrationClient::new(reg_channel);
+
+        let remote_service = reg_client
+            .register_service(self.registration_message.clone())
+            .await
+            .map_err(|status| match status.code() {
+                Code::Unimplemented => ManualConnectionError::RemoteUnimplemented,
+                Code::Internal => ManualConnectionError::RemoteInternal,
+                Code::Unavailable => ManualConnectionError::Unavailable,
+                _ => ManualConnectionError::FailedToRegister,
+            })?
+            .into_inner();
+
+        if let Some(remote) = self.remote(&remote_service.service_id).await {
+            // Check remote info is up to date
+            self.update_remote(&remote.uuid, |remote| {
+                if let Ok(ip) = IpAddr::from_str(ip) {
+                    remote.ip = ip;
+                }
+                remote.hostname = remote_service.hostname;
+                remote.port = remote_service.port as u16;
+                remote.auth_port = remote_service.auth_port as u16;
+                remote.service_static = true;
+            })
+            .await
+            .expect("Remote already found");
+
+            return match remote.state {
+                RemoteState::Error(_) | RemoteState::Disconnected => self
+                    .get_worker(&remote.uuid)
+                    .await
+                    .ok_or(ManualConnectionError::FailedToConnect(
+                        ConnectRemoteError::RemoteWorkerNotFound,
+                    ))?
+                    .connect()
+                    .await
+                    .map_err(ManualConnectionError::FailedToConnect),
+                RemoteState::Connecting | RemoteState::AwaitingDuplex => {
+                    Err(ManualConnectionError::AlreadyConnecting)
+                }
+                RemoteState::Connected => Err(ManualConnectionError::AlreadyConnected),
+            };
+        }
+
+        let mut remote = Remote::new(
+            remote_service.service_id.clone(),
+            IpAddr::from_str(ip).map_err(|_| ManualConnectionError::InvalidUrl)?,
+            remote_service.port as u16,
+            remote_service.auth_port as u16,
+            remote_service.service_id,
+            remote_service.hostname.clone(),
+        );
+
+        remote.service_static = true;
+
+        self.add_remote(remote)
+            .await
+            .connect()
+            .await
+            .map_err(ManualConnectionError::FailedToConnect)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<WarpEvent> {
