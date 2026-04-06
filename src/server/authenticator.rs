@@ -28,6 +28,20 @@ pub enum CertUnboxError {
     DecryptionFailed,
 }
 
+#[derive(Error, Debug)]
+pub enum AuthenticatorError {
+    #[error("Private Key generation failed: {0}")]
+    PrivateKeyError(#[from] rsa::Error),
+    #[error("Public Key generation failed: {0}")]
+    PublicKeyError(#[from] x509_cert::spki::Error),
+    #[error(transparent)]
+    DerError(#[from] x509_cert::der::Error),
+    #[error("Certificate generation failed: {0}")]
+    CertificateError(#[from] x509_cert::builder::Error),
+    #[error("PEM error")]
+    PemError(#[from] rsa::pkcs8::Error),
+}
+
 type GeneratedCert = (Vec<u8>, Vec<u8>); // (cert_pem, private_key_pem)
 
 #[derive(Debug)]
@@ -47,22 +61,21 @@ impl Authenticator {
         group_code: String,
         hostname: &str,
         local_ip: IpAddr,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, AuthenticatorError> {
         let (cert_pem, private_key_pem) = Self::generate_cert(hostname, local_ip)?;
 
         Ok(Self { group_code, cert_pem, private_key_pem })
     }
 
-    /// Returns the cert boxed with the group code key, ready to send to peers
-    #[instrument(skip_all, level = "trace", err)]
-    pub fn box_cert(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    /// Returns the cert boxed with the group code key, ready to send to peers.
+    /// Returns None if it fails to encrypt the cert_pem
+    #[instrument(skip_all, level = "trace")]
+    pub fn box_cert(&self) -> Result<Vec<u8>, crypto_secretbox::Error> {
         let key = self.derive_key();
         let cipher = XSalsa20Poly1305::new(Key::from_slice(&key));
         let nonce = XSalsa20Poly1305::generate_nonce(&mut OsRng);
 
-        let ciphertext = cipher
-            .encrypt(&nonce, self.cert_pem.as_slice())
-            .map_err(|e| format!("Encryption failed: {}", e))?;
+        let ciphertext = cipher.encrypt(&nonce, self.cert_pem.as_slice())?;
 
         // Layout: [nonce (24 bytes) | ciphertext]
         let mut result = Vec::with_capacity(24 + ciphertext.len());
@@ -111,7 +124,7 @@ impl Authenticator {
     fn generate_cert(
         hostname: &str,
         local_ip: IpAddr,
-    ) -> Result<GeneratedCert, Box<dyn std::error::Error>> {
+    ) -> Result<GeneratedCert, AuthenticatorError> {
         let mut rng = OsRng;
 
         // Generate RSA 2048 keypair
@@ -160,8 +173,6 @@ impl Authenticator {
 
         let cert_pem = cert.to_pem(Default::default())?.into_bytes();
         let private_key_pem = private_key.to_pkcs8_pem(Default::default())?.as_bytes().to_vec();
-
-        tracing::info!("Generated certificates");
 
         Ok((cert_pem, private_key_pem))
     }

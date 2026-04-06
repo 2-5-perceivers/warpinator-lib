@@ -5,6 +5,7 @@ use async_walkdir::WalkDir;
 use thiserror::Error;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
+use tracing::instrument;
 
 use crate::proto::{OpInfo, TransferOpRequest};
 
@@ -182,6 +183,7 @@ impl Transfer {
         }
     }
 
+    #[instrument(skip_all, level = "debug", err(level = "warn"))]
     pub async fn process_paths<P: AsRef<Path>>(
         &mut self,
         paths: &[P],

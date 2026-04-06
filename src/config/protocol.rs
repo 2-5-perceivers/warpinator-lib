@@ -26,7 +26,7 @@ impl Default for ProtocolFeatures {
     }
 }
 
-struct ProtocolConfigBuilder {
+pub struct ProtocolConfigBuilder {
     features: Option<ProtocolFeatures>,
     reconnect_interval: Option<Duration>,
     connect_timeout: Option<Duration>,

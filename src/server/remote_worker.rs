@@ -29,10 +29,14 @@ use crate::types::transfer::{Transfer, TransferError, TransferKind, TransferStat
 pub enum ReceiveCertError {
     #[error("Local remote not found")]
     NoRemote,
-    #[error("Failed to register with remote: {0}")]
-    RegisterServiceError(Box<dyn std::error::Error + Send + Sync>),
-    #[error("Failed to request certificate: {0}")]
-    CertificateRequestFailed(String), // status description
+    #[error("Invalid connection Uri")]
+    InvalidUri(#[from] http::uri::InvalidUri),
+    #[error("Request of certificate failed: {0}")]
+    RequestFailed(#[from] Status),
+    #[error("Failed to decode certificate: {0}")]
+    DecodingCertificateFailed(#[from] base64::DecodeError),
+    #[error("Received certificate has invalid format")]
+    MalformedCertificate,
     #[error("Group code mismatch")]
     WrongGroupCode,
     #[error("Remote registration service is offline")]
@@ -129,6 +133,7 @@ impl RemoteWorker {
     }
 
     /// Spawns the state loop task. Call once after construction.
+    #[instrument(skip_all, level = "debug")]
     pub(crate) fn spawn_loop(self: Arc<Self>, mut state_rx: watch::Receiver<RemoteState>) {
         async fn wait_then_reconnect(
             remote: &RemoteWorker,
@@ -140,7 +145,6 @@ impl RemoteWorker {
                     false
                 },
                 _ = sleep(remote.protocol_config.reconnect_interval) => {
-                    tracing::debug!(uuid = %remote.uuid, "Attempting reconnect");
                     let _ = remote.connect().await;
                     true
                 }
@@ -197,7 +201,7 @@ impl RemoteWorker {
         });
     }
 
-    #[instrument(skip(self), err(level = "warn"))]
+    #[instrument(skip(self), fields(uuid = self.uuid), err(level = "warn"))]
     pub async fn connect(&self) -> Result<(), ConnectRemoteError> {
         self.set_state(RemoteState::Connecting).await;
 
@@ -220,7 +224,6 @@ impl RemoteWorker {
         let channel = match self.build_channel(&cert_pem).await {
             Ok(ch) => ch,
             Err(e) => {
-                tracing::warn!(uuid = %self.uuid, "Failed to build TLS channel: {:#?}", e);
                 self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await;
                 return Err(ConnectRemoteError::TlsError(Box::new(e)));
             }
@@ -231,7 +234,6 @@ impl RemoteWorker {
         *self.client.write().await = Some(client);
 
         if let Err(e) = self.ping().await {
-            tracing::warn!(uuid = %self.uuid, "Initial ping failed: {}", e);
             self.clear_channel().await;
             self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await;
             return Err(ConnectRemoteError::PingError(Box::new(e)));
@@ -246,15 +248,10 @@ impl RemoteWorker {
 
         self.set_state(RemoteState::Connected).await;
 
-        if let Err(e) = self.fetch_machine_info().await {
-            tracing::warn!(uuid = %self.uuid, "Failed to get machine info: {}", e);
-        }
+        let _ = self.fetch_machine_info().await;
+        let _ = self.fetch_avatar().await;
 
-        if let Err(e) = self.fetch_avatar().await {
-            tracing::warn!(uuid = %self.uuid, "Failed to get avatar: {}", e);
-        }
-
-        tracing::info!(uuid = %self.uuid, "Connection established");
+        tracing::info!("Connection established");
         Ok(())
     }
 
@@ -267,6 +264,7 @@ impl RemoteWorker {
         self.state_tx.subscribe()
     }
 
+    #[instrument(skip_all, err(level = "debug"))]
     async fn receive_certificate(&self) -> Result<Vec<u8>, ReceiveCertError> {
         let remote =
             self.remote_manager.remote(&self.uuid).await.ok_or(ReceiveCertError::NoRemote)?;
@@ -279,8 +277,7 @@ impl RemoteWorker {
                 format!("http://[{}]:{}", ipv6.to_string(), remote.auth_port)
             }
         };
-        let reg_channel = Channel::from_shared(addr)
-            .map_err(|e| ReceiveCertError::RegisterServiceError(Box::from(e)))?
+        let reg_channel = Channel::from_shared(addr)?
             .connect_timeout(self.protocol_config.connect_timeout)
             .connect()
             .await
@@ -296,24 +293,14 @@ impl RemoteWorker {
                 ipv6: "".to_string(),
                 // TODO: add ipv6 support
             })
-            .await
-            .map_err(|status| {
-                ReceiveCertError::CertificateRequestFailed(status.code().description().into())
-            })?
+            .await?
             .into_inner();
 
         let cleaned_cert = response.locked_cert.replace(&['\n', '\r'][..], "");
 
-        let decoded = STANDARD.decode(cleaned_cert).map_err(|a| {
-            ReceiveCertError::CertificateRequestFailed(format!(
-                "Failed to decode base64 certificate {}",
-                a
-            ))
-        })?;
+        let decoded = STANDARD.decode(cleaned_cert)?;
         let cert_pem = self.authenticator.unbox_cert(&decoded).map_err(|e| match e {
-            CertUnboxError::BoxTooShort => {
-                ReceiveCertError::CertificateRequestFailed("Box too short".into())
-            }
+            CertUnboxError::BoxTooShort => ReceiveCertError::MalformedCertificate,
             CertUnboxError::DecryptionFailed => ReceiveCertError::WrongGroupCode,
         })?;
 
@@ -327,6 +314,7 @@ impl RemoteWorker {
         Ok(cert_pem)
     }
 
+    #[instrument(skip_all, err(level = "debug"))]
     async fn build_channel(&self, cert_pem: &[u8]) -> Result<Channel, RemoteWorkerError> {
         let remote = self
             .remote_manager
@@ -357,6 +345,7 @@ impl RemoteWorker {
         Ok(channel)
     }
 
+    #[instrument(skip_all, err(level = "debug"))]
     async fn ping(&self) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
         let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
@@ -374,6 +363,7 @@ impl RemoteWorker {
         Ok(())
     }
 
+    #[instrument(skip_all, err(level = "debug"))]
     async fn wait_for_duplex(&self) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
         let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
@@ -395,6 +385,7 @@ impl RemoteWorker {
         Ok(())
     }
 
+    #[instrument(skip_all, err(level = "debug"))]
     async fn fetch_machine_info(&self) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
         let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
@@ -413,6 +404,7 @@ impl RemoteWorker {
         Ok(())
     }
 
+    #[instrument(skip_all, err(level = "debug"))]
     async fn fetch_avatar(&self) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
         let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
@@ -437,6 +429,7 @@ impl RemoteWorker {
         Ok(())
     }
 
+    #[instrument(skip_all, err(level = "warn"))]
     pub async fn send_transfer_request(
         &self,
         source_paths: Vec<PathBuf>,
@@ -485,6 +478,7 @@ impl RemoteWorker {
     }
 
     #[cfg(feature = "messaging")]
+    #[instrument(skip_all, err(level = "warn"))]
     pub async fn send_message(&self, message: &str) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
         let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;
@@ -499,6 +493,7 @@ impl RemoteWorker {
         Ok(())
     }
 
+    #[instrument(skip_all, err(level = "warn"))]
     pub async fn accept_transfer<P: AsRef<Path>>(
         &self,
         transfer_uuid: &str,
@@ -557,6 +552,7 @@ impl RemoteWorker {
 
     /// Stop an in-progress transfer. Don't use on transfers that are not in
     /// progress
+    #[instrument(skip_all, err(level = "warn"))]
     pub async fn stop_transfer(
         &self,
         transfer_uuid: &str,
@@ -603,6 +599,7 @@ impl RemoteWorker {
 
     /// Reject an incoming transfer or cancel an outgoing one. Use only on
     /// transfers waiting for permission
+    #[instrument(skip_all, err(level = "warn"))]
     pub async fn cancel_transfer(&self, transfer_uuid: &str) -> Result<(), RemoteWorkerError> {
         let client = self.client.read().await;
         let client = client.as_ref().ok_or(RemoteWorkerError::NoClient)?;

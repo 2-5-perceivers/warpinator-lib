@@ -22,6 +22,45 @@ use crate::server::discovery::DiscoveryService;
 const SERVICE_DOMAIN: &str = "_warpinator._tcp.local.";
 const SERVICE_API_VERSION: u16 = 2;
 
+#[derive(Debug, thiserror::Error)]
+pub enum WarpinatorBuildError {
+    #[error("service name is required")]
+    MissingServiceName,
+
+    #[error("at least one bind address (IPv4 or IPv6) is required")]
+    MissingBindAddress,
+
+    #[error("failed to initialize authenticator: {0}")]
+    Authenticator(#[from] authenticator::AuthenticatorError),
+
+    #[error("failed to create remote manager")]
+    RemoteManagerInit,
+
+    #[error("failed to create mDNS daemon: {0}")]
+    MdnsDaemon(#[from] mdns_sd::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WarpinatorServeError {
+    #[error("at least one bind address (IPv4 or IPv6) is required")]
+    MissingBindAddress,
+
+    #[error("failed to configure TLS: {0}")]
+    TlsConfig(#[from] tonic::transport::Error),
+
+    #[error("registration server failed: {0}")]
+    RegistrationServer(tonic::transport::Error),
+
+    #[error("warp server failed: {0}")]
+    WarpServer(tonic::transport::Error),
+
+    #[error("Failed to build mDNS service info: {0}")]
+    MdnsServiceInfo(#[from] mdns_sd::Error),
+
+    #[error("Failed to start service thread")]
+    ServiceThread(#[from] tokio::task::JoinError),
+}
+
 pub struct WarpinatorServerBuilder {
     user_config: Option<UserConfig>,
     protocol_config: Option<ProtocolConfig>,
@@ -44,8 +83,8 @@ impl WarpinatorServerBuilder {
         self
     }
 
-    pub fn build(self) -> Result<WarpinatorServer, Box<dyn std::error::Error>> {
-        let service_name = self.service_name.ok_or("Service name is required")?;
+    pub fn build(self) -> Result<WarpinatorServer, WarpinatorBuildError> {
+        let service_name = self.service_name.ok_or(WarpinatorBuildError::MissingServiceName)?;
         let user_config = self.user_config.unwrap_or_default();
         let protocol_config = self.protocol_config.unwrap_or_default();
         let cancellation_token = CancellationToken::new();
@@ -53,7 +92,7 @@ impl WarpinatorServerBuilder {
         let authenticator = Arc::new(authenticator::Authenticator::new(
             user_config.group_code.clone(),
             user_config.hostname.as_str(),
-            user_config.bind_addr_v4.ok_or("One IP address (IPv4 or IPv6) is required")?.into(),
+            user_config.bind_addr_v4.ok_or(WarpinatorBuildError::MissingBindAddress)?.into(),
         )?);
 
         let remotes = remote_manager::RemoteManager::new(
@@ -63,7 +102,7 @@ impl WarpinatorServerBuilder {
             user_config.clone(),
             service_name.clone(),
         )
-        .ok_or("Failed to create remote manager")?;
+        .ok_or(WarpinatorBuildError::RemoteManagerInit)?;
 
         Ok(WarpinatorServer {
             user_config,
@@ -92,7 +131,7 @@ impl WarpinatorServer {
         WarpinatorServerBuilder { user_config: None, protocol_config: None, service_name: None }
     }
 
-    pub async fn serve(self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn serve(self) -> Result<(), WarpinatorServeError> {
         self.serve_with_shutdown(std::future::pending()).await
     }
 
@@ -100,7 +139,7 @@ impl WarpinatorServer {
     pub async fn serve_with_shutdown(
         self,
         shutdown: impl Future<Output = ()>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), WarpinatorServeError> {
         let identity = Identity::from_pem(
             self.authenticator.as_ref().cert_pem(),
             self.authenticator.as_ref().private_key_pem(),
@@ -169,23 +208,25 @@ impl WarpinatorServer {
             _ = shutdown => {
                 tracing::info!("Shutdown signal received, stopping servers...");
                 self.cancellation_token.cancel();
-                self.shutdown_mdns().await?;
+                self.shutdown_mdns().await;
                 Ok(())
             },
-            _ = reg_handle => {
+            reg_result = reg_handle => {
                 tracing::error!("Registration server task ended unexpectedly");
                 self.cancellation_token.cancel();
-                Err("Registration server task terminated".into())
+                let reg_result = reg_result?;
+                reg_result.map_err(WarpinatorServeError::RegistrationServer)
             },
-            _ = warp_handle => {
+            warp_result = warp_handle => {
                 tracing::error!("Warp server task ended unexpectedly");
                 self.cancellation_token.cancel();
-                Err("Warp server task terminated".into())
+                let warp_result = warp_result?;
+                warp_result.map_err(WarpinatorServeError::WarpServer)
             },
         }
     }
 
-    async fn announce_mdns(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn announce_mdns(&self) -> Result<(), WarpinatorServeError> {
         let mdns = self.mdns.clone();
 
         let service_info = ServiceInfo::new(
@@ -193,7 +234,7 @@ impl WarpinatorServer {
             &self.service_name,
             &format!("{}.local.", self.user_config.hostname.clone()),
             IpAddr::from(
-                self.user_config.bind_addr_v4.ok_or("One IP address (IPv4 or IPv6) is required")?,
+                self.user_config.bind_addr_v4.ok_or(WarpinatorServeError::MissingBindAddress)?,
             ),
             self.user_config.port,
             &[
@@ -205,8 +246,8 @@ impl WarpinatorServer {
         )?;
 
         mdns.unregister(service_info.get_fullname()).map_or_else(
-            |_| tracing::info!("No existing mDNS service to unregister"),
-            |_| tracing::info!("Unregistered existing mDNS service"),
+            |_| tracing::debug!("No existing mDNS service to unregister"),
+            |_| tracing::debug!("Unregistered existing mDNS service"),
         );
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -230,7 +271,7 @@ impl WarpinatorServer {
         Ok(())
     }
 
-    async fn shutdown_mdns(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn shutdown_mdns(&self) -> () {
         // This will automatically unregister all services and shut down the daemon
         let mut result = self.mdns.shutdown();
         if let Err(mdns_sd::Error::Again) = result {
@@ -243,6 +284,5 @@ impl WarpinatorServer {
             while stream.recv_async().await.is_ok() {}
             tracing::info!("mDNS daemon shut down");
         }
-        Ok(())
     }
 }
