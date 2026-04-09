@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,9 +18,8 @@ use tracing::instrument;
 use crate::config::protocol::ProtocolConfig;
 use crate::proto::warp_client::WarpClient;
 use crate::proto::{LookupName, OpInfo, StopInfo};
-use crate::remote_manager::UpdateError;
+use crate::remote_manager::{RemoteManagerInner, UpdateError, WeakRemoteManager};
 use crate::server::authenticator::{Authenticator, CertUnboxError};
-use crate::server::remote_manager::RemoteManager;
 use crate::server::transfers::transfer_receiver;
 use crate::types::message::{Direction, Message};
 use crate::types::remote::{RemoteConnectionError, RemoteState};
@@ -27,6 +27,8 @@ use crate::types::transfer::{Transfer, TransferError, TransferKind, TransferStat
 
 #[derive(Error, Debug)]
 pub enum ReceiveCertError {
+    #[error("Remote worker error")]
+    RemoteWorkerError(#[from] RemoteWorkerError),
     #[error("Local remote not found")]
     NoRemote,
     #[error("Invalid connection Uri")]
@@ -59,10 +61,18 @@ pub enum ConnectRemoteError {
     ),
     #[error("Remote worker not found")]
     RemoteWorkerNotFound,
+    #[error("Remote worker error")]
+    RemoteWorkerError(
+        #[cfg_attr(feature = "serde", serde(skip))]
+        #[from]
+        RemoteWorkerError,
+    ),
 }
 
 #[derive(Error, Debug)]
 pub enum RemoteWorkerError {
+    #[error("Manager was destroyed")]
+    NoManager,
     #[error("Corresponding remote was not found")]
     RemoteNotFound,
     #[error("Transfer was not found")]
@@ -90,7 +100,7 @@ type WarpChannel = WarpClient<Channel>;
 #[derive(Debug)]
 pub struct RemoteWorker {
     uuid: String,
-    remote_manager: RemoteManager,
+    remote_manager: WeakRemoteManager,
     authenticator: Arc<Authenticator>,
     channel: RwLock<Option<Channel>>,
     client: RwLock<Option<WarpChannel>>,
@@ -105,7 +115,7 @@ pub struct RemoteWorker {
 impl RemoteWorker {
     pub(crate) fn new(
         uuid: String,
-        remote_manager: RemoteManager,
+        remote_manager: WeakRemoteManager,
         authenticator: Arc<Authenticator>,
         root_token: &CancellationToken,
         protocol_config: ProtocolConfig,
@@ -141,7 +151,10 @@ impl RemoteWorker {
         ) -> bool {
             tokio::select! {
                 _ = remote.cancellation_token.cancelled() => {
-                    remote.disconnect().await;
+                     let diconnect = remote.disconnect().await;
+                                if diconnect.is_err() {
+                                    tracing::debug!(uuid = %remote.uuid, "Failed to disconnect");
+                                }
                     false
                 },
                 _ = sleep(remote.protocol_config.reconnect_interval) => {
@@ -159,13 +172,16 @@ impl RemoteWorker {
                     RemoteState::Connected => {
                         tokio::select! {
                             _ = self.cancellation_token.cancelled() => {
-                                self.disconnect().await;
+                                 let diconnect = self.disconnect().await;
+                                if diconnect.is_err() {
+                                    tracing::debug!(uuid = %self.uuid, "Failed to disconnect");
+                                }
                                 break;
                             }
                             _ = sleep(self.protocol_config.ping_interval) => {
                                 if let Err(e) = self.ping().await {
                                     tracing::debug!(uuid = %self.uuid, "Ping failed: {}", e);
-                                    self.set_state(RemoteState::Disconnected).await;
+                                    let _ = self.set_state(RemoteState::Disconnected).await;
                                     self.clear_channel().await;
                                 }
                             }
@@ -190,7 +206,10 @@ impl RemoteWorker {
                     _ => {
                         tokio::select! {
                             _ = self.cancellation_token.cancelled() => {
-                                self.disconnect().await;
+                                let diconnect = self.disconnect().await;
+                                if diconnect.is_err() {
+                                    tracing::debug!(uuid = %self.uuid, "Failed to disconnect");
+                                }
                                 break;
                             },
                             _ = state_rx.changed() => {}
@@ -203,7 +222,7 @@ impl RemoteWorker {
 
     #[instrument(skip(self), fields(uuid = self.uuid), err(level = "warn"))]
     pub async fn connect(&self) -> Result<(), ConnectRemoteError> {
-        self.set_state(RemoteState::Connecting).await;
+        self.set_state(RemoteState::Connecting).await?;
 
         let cert_pem = match self.receive_certificate().await {
             Ok(cert) => cert,
@@ -216,7 +235,7 @@ impl RemoteWorker {
                     _ => RemoteState::Error(RemoteConnectionError::NoCertificate),
                 };
 
-                self.set_state(state).await;
+                self.set_state(state).await?;
                 return Err(ConnectRemoteError::CertificateError(e));
             }
         };
@@ -224,7 +243,7 @@ impl RemoteWorker {
         let channel = match self.build_channel(&cert_pem).await {
             Ok(ch) => ch,
             Err(e) => {
-                self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await;
+                self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await?;
                 return Err(ConnectRemoteError::TlsError(Box::new(e)));
             }
         };
@@ -235,18 +254,18 @@ impl RemoteWorker {
 
         if let Err(e) = self.ping().await {
             self.clear_channel().await;
-            self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await;
+            self.set_state(RemoteState::Error(RemoteConnectionError::SslError)).await?;
             return Err(ConnectRemoteError::PingError(Box::new(e)));
         }
 
-        self.set_state(RemoteState::AwaitingDuplex).await;
+        self.set_state(RemoteState::AwaitingDuplex).await?;
         if let Err(e) = self.wait_for_duplex().await {
             self.clear_channel().await;
-            self.set_state(RemoteState::Error(RemoteConnectionError::DuplexError)).await;
+            self.set_state(RemoteState::Error(RemoteConnectionError::DuplexError)).await?;
             return Err(ConnectRemoteError::DuplexError(Box::new(e)));
         }
 
-        self.set_state(RemoteState::Connected).await;
+        self.set_state(RemoteState::Connected).await?;
 
         let _ = self.fetch_machine_info().await;
         let _ = self.fetch_avatar().await;
@@ -255,9 +274,9 @@ impl RemoteWorker {
         Ok(())
     }
 
-    pub(crate) async fn disconnect(&self) {
+    pub(crate) async fn disconnect(&self) -> Result<(), RemoteWorkerError> {
         self.clear_channel().await;
-        self.set_state(RemoteState::Disconnected).await;
+        self.set_state(RemoteState::Disconnected).await
     }
 
     pub fn subscribe_state(&self) -> watch::Receiver<RemoteState> {
@@ -266,8 +285,7 @@ impl RemoteWorker {
 
     #[instrument(skip_all, err(level = "debug"))]
     async fn receive_certificate(&self) -> Result<Vec<u8>, ReceiveCertError> {
-        let remote =
-            self.remote_manager.remote(&self.uuid).await.ok_or(ReceiveCertError::NoRemote)?;
+        let remote = self.manager()?.remote(&self.uuid).await.ok_or(ReceiveCertError::NoRemote)?;
 
         let addr = match remote.ip {
             IpAddr::V4(ip) => {
@@ -304,7 +322,7 @@ impl RemoteWorker {
             CertUnboxError::DecryptionFailed => ReceiveCertError::WrongGroupCode,
         })?;
 
-        self.remote_manager
+        self.manager()?
             .update_remote(&self.uuid, |r| {
                 r.cert_pem = Some(cert_pem.clone());
             })
@@ -316,11 +334,8 @@ impl RemoteWorker {
 
     #[instrument(skip_all, err(level = "debug"))]
     async fn build_channel(&self, cert_pem: &[u8]) -> Result<Channel, RemoteWorkerError> {
-        let remote = self
-            .remote_manager
-            .remote(&self.uuid)
-            .await
-            .ok_or(RemoteWorkerError::RemoteNotFound)?;
+        let remote =
+            self.manager()?.remote(&self.uuid).await.ok_or(RemoteWorkerError::RemoteNotFound)?;
 
         let cert = Certificate::from_pem(cert_pem);
         let tls = ClientTlsConfig::new().ca_certificate(cert).domain_name(remote.ip.to_string());
@@ -393,7 +408,7 @@ impl RemoteWorker {
 
         let info = client.get_remote_machine_info(LookupName::default()).await?.into_inner();
 
-        self.remote_manager
+        self.manager()?
             .update_remote(&self.uuid, |r| {
                 r.display_name = info.display_name.clone();
                 r.username = info.user_name.clone();
@@ -419,7 +434,7 @@ impl RemoteWorker {
         }
 
         if !bytes.is_empty() {
-            self.remote_manager
+            self.manager()?
                 .update_remote(&self.uuid, |r| {
                     r.picture = Some(bytes.clone());
                 })
@@ -445,7 +460,7 @@ impl RemoteWorker {
 
         // Add transfer in initializing state before processing paths, so it appears in
         // UI immediately
-        self.remote_manager.add_transfer(&self.uuid, transfer.clone()).await?;
+        self.manager()?.add_transfer(&self.uuid, transfer.clone()).await?;
 
         let processing_result = transfer.process_paths(&source_paths).await;
 
@@ -454,7 +469,7 @@ impl RemoteWorker {
                 client
                     .process_transfer_op_request(transfer.as_proto(self.server_fullname.as_str()))
                     .await?;
-                self.remote_manager
+                self.manager()?
                     .update_transfer(&self.uuid, &transfer.uuid, |t| {
                         t.total_bytes = transfer.total_bytes;
                         t.file_count = transfer.file_count;
@@ -467,7 +482,7 @@ impl RemoteWorker {
                 Ok(())
             }
             Err(e) => {
-                self.remote_manager
+                self.manager()?
                     .update_transfer(&self.uuid, &transfer.uuid, |t| {
                         t.state = TransferState::Failed(TransferError::FailedToProcessFiles);
                     })
@@ -488,7 +503,7 @@ impl RemoteWorker {
 
         client.send_text_message(message.as_proto(self.server_fullname.as_str())).await?;
 
-        self.remote_manager.add_message(&self.uuid, message).await?;
+        self.manager()?.add_message(&self.uuid, message).await?;
 
         Ok(())
     }
@@ -504,7 +519,7 @@ impl RemoteWorker {
         let mut client = client.clone();
 
         let transfer = self
-            .remote_manager
+            .manager()?
             .transfer(self.uuid.as_str(), transfer_uuid)
             .await
             .ok_or(RemoteWorkerError::TransferNotFound)?;
@@ -530,7 +545,7 @@ impl RemoteWorker {
 
         let destination = destination.as_ref().to_path_buf();
 
-        self.remote_manager
+        self.manager()?
             .update_transfer(&self.uuid, transfer_uuid, |t| {
                 t.state = TransferState::InProgress;
                 t.kind =
@@ -539,7 +554,7 @@ impl RemoteWorker {
             .await?;
 
         tokio::spawn(transfer_receiver::receive_stream(
-            self.remote_manager.clone(),
+            self.manager()?.clone(),
             self.uuid.clone(),
             transfer_uuid.to_string(),
             stream,
@@ -563,7 +578,7 @@ impl RemoteWorker {
         let mut client = client.clone();
 
         let transfer = self
-            .remote_manager
+            .manager()?
             .transfer(self.uuid.as_str(), transfer_uuid)
             .await
             .ok_or(RemoteWorkerError::TransferNotFound)?;
@@ -588,7 +603,7 @@ impl RemoteWorker {
             })
             .await?;
 
-        self.remote_manager
+        self.manager()?
             .update_transfer(&self.uuid, transfer_uuid, |t| {
                 t.state = TransferState::Stopped;
             })
@@ -606,7 +621,7 @@ impl RemoteWorker {
         let mut client = client.clone();
 
         let transfer = self
-            .remote_manager
+            .manager()?
             .transfer(self.uuid.as_str(), transfer_uuid)
             .await
             .ok_or(RemoteWorkerError::TransferNotFound)?;
@@ -630,7 +645,7 @@ impl RemoteWorker {
             })
             .await?;
 
-        self.remote_manager
+        self.manager()?
             .update_transfer(&self.uuid, transfer_uuid, |t| {
                 t.state = new_state;
             })
@@ -639,18 +654,23 @@ impl RemoteWorker {
         Ok(())
     }
 
-    async fn set_state(&self, state: RemoteState) {
+    async fn set_state(&self, state: RemoteState) -> Result<(), RemoteWorkerError> {
         let _ = self.state_tx.send(state.clone());
         let _ = self
-            .remote_manager
+            .manager()?
             .update_remote(&self.uuid, |r| {
                 r.state = state;
             })
             .await;
+        Ok(())
     }
 
     async fn clear_channel(&self) {
         *self.channel.write().await = None;
         *self.client.write().await = None;
+    }
+
+    fn manager(&self) -> Result<Arc<RemoteManagerInner>, RemoteWorkerError> {
+        Ok(self.remote_manager.upgrade().ok_or(RemoteWorkerError::NoManager)?)
     }
 }

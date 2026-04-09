@@ -1,5 +1,6 @@
 use std::fs::FileTimes;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -7,7 +8,7 @@ use tonic::Streaming;
 use tracing::instrument;
 
 use crate::proto::{FileChunk, FileTime};
-use crate::remote_manager::RemoteManager;
+use crate::remote_manager::RemoteManagerInner;
 use crate::server::transfers::{FileType, MovingAverageCalculator};
 use crate::types::transfer::{TransferError, TransferState};
 
@@ -54,7 +55,7 @@ async fn process_chunk(
     chunk: FileChunk,
     state: &mut ReceiveState,
     destination: &PathBuf,
-    remote_manager: &RemoteManager,
+    remote_manager: &Arc<RemoteManagerInner>,
     remote_uuid: &str,
     transfer_uuid: &str,
 ) -> Result<(), TransferError> {
@@ -126,7 +127,7 @@ async fn process_chunk(
     err(level = "warn")
 )]
 async fn receive_stream_inner(
-    remote_manager: &RemoteManager,
+    remote_manager: &Arc<RemoteManagerInner>,
     remote_uuid: &str,
     transfer_uuid: &str,
     stream: &mut Streaming<FileChunk>,
@@ -166,7 +167,7 @@ async fn receive_stream_inner(
 }
 
 pub(crate) async fn receive_stream(
-    remote_manager: RemoteManager,
+    remote_manager: Arc<RemoteManagerInner>,
     remote_uuid: String,
     transfer_uuid: String,
     mut stream: Streaming<FileChunk>,

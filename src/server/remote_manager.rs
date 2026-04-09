@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::ops::Deref;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use thiserror::Error;
 use tokio::sync::{RwLock, broadcast};
@@ -65,7 +66,7 @@ pub enum ManualConnectionError {
 }
 
 #[derive(Debug)]
-pub(crate) struct RemoteManagerInner {
+pub struct RemoteManagerInner {
     remotes: RwLock<HashMap<String, Remote>>,
     workers: RwLock<HashMap<String, Arc<RemoteWorker>>>,
     event_tx: broadcast::Sender<WarpEvent>,
@@ -81,6 +82,25 @@ pub(crate) struct RemoteManagerInner {
 pub struct RemoteManager {
     inner: Arc<RemoteManagerInner>,
     registration_message: ServiceRegistration,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WeakRemoteManager {
+    inner: Weak<RemoteManagerInner>,
+}
+
+impl Deref for RemoteManager {
+    type Target = RemoteManagerInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl WeakRemoteManager {
+    pub(crate) fn upgrade(&self) -> Option<Arc<RemoteManagerInner>> {
+        self.inner.upgrade()
+    }
 }
 
 impl RemoteManager {
@@ -117,12 +137,16 @@ impl RemoteManager {
         })
     }
 
+    pub(crate) fn downgrade(&self) -> WeakRemoteManager {
+        WeakRemoteManager { inner: Arc::downgrade(&self.inner) }
+    }
+
     pub(crate) async fn add_remote(&self, remote: Remote) -> Arc<RemoteWorker> {
         let uuid = remote.uuid.clone();
 
         let (worker, state_rx) = RemoteWorker::new(
             uuid.clone(),
-            self.clone(),
+            self.downgrade(),
             Arc::clone(&self.inner.authenticator),
             &self.inner.root_token,
             self.inner.protocol_config.clone(),
@@ -140,113 +164,6 @@ impl RemoteManager {
         let _ = self.inner.event_tx.send(WarpEvent::RemoteAdded(uuid));
 
         worker
-    }
-
-    pub(crate) async fn update_remote(
-        &self,
-        uuid: &str,
-        f: impl FnOnce(&mut Remote),
-    ) -> Result<(), UpdateError> {
-        if let Some(remote) = self.inner.remotes.write().await.get_mut(uuid) {
-            f(remote);
-            let _ = self.inner.event_tx.send(WarpEvent::RemoteUpdated(uuid.to_string()));
-            Ok(())
-        } else {
-            Err(UpdateError::NotFound)
-        }
-    }
-
-    pub(crate) async fn add_transfer(
-        &self,
-        remote_uuid: &str,
-        transfer: Transfer,
-    ) -> Result<(), UpdateError> {
-        let transfer_uuid = transfer.uuid.clone();
-        if let Some(remote) = self.inner.remotes.write().await.get_mut(remote_uuid) {
-            remote.transfers.push(transfer);
-            let _ = self
-                .inner
-                .event_tx
-                .send(WarpEvent::TransferAdded(remote_uuid.to_string(), transfer_uuid));
-            Ok(())
-        } else {
-            Err(UpdateError::NotFound)
-        }
-    }
-
-    pub(crate) async fn update_transfer(
-        &self,
-        remote_uuid: &str,
-        transfer_uuid: &str,
-        f: impl FnOnce(&mut Transfer),
-    ) -> Result<(), UpdateError> {
-        if let Some(remote) = self.inner.remotes.write().await.get_mut(remote_uuid)
-            && let Some(transfer) = remote.transfers.iter_mut().find(|t| t.uuid == transfer_uuid)
-        {
-            f(transfer);
-            let _ = self.inner.event_tx.send(WarpEvent::TransferUpdated(
-                remote_uuid.to_string(),
-                transfer_uuid.to_string(),
-            ));
-            return Ok(());
-        }
-        Err(UpdateError::NotFound)
-    }
-
-    pub async fn remove_transfer(
-        &self,
-        remote_uuid: &str,
-        transfer_uuid: &str,
-    ) -> Result<(), UpdateError> {
-        if let Some(remote) = self.inner.remotes.write().await.get_mut(remote_uuid)
-            && let Some(pos) = remote.transfers.iter().position(|t| t.uuid == transfer_uuid)
-        {
-            remote.transfers.remove(pos);
-            let _ = self.inner.event_tx.send(WarpEvent::TransferRemoved(
-                remote_uuid.to_string(),
-                transfer_uuid.to_string(),
-            ));
-            return Ok(());
-        }
-        Err(UpdateError::NotFound)
-    }
-
-    #[cfg(feature = "messaging")]
-    pub(crate) async fn add_message(
-        &self,
-        remote_uuid: &str,
-        message: Message,
-    ) -> Result<(), UpdateError> {
-        let message_uuid = message.uuid.clone();
-        if let Some(remote) = self.inner.remotes.write().await.get_mut(remote_uuid) {
-            remote.messages.push(message);
-            let _ = self
-                .inner
-                .event_tx
-                .send(WarpEvent::MessageAdded(remote_uuid.to_string(), message_uuid));
-            Ok(())
-        } else {
-            Err(UpdateError::NotFound)
-        }
-    }
-
-    #[cfg(feature = "messaging")]
-    pub async fn remove_message(
-        &self,
-        remote_uuid: &str,
-        message_uuid: &str,
-    ) -> Result<(), UpdateError> {
-        if let Some(remote) = self.inner.remotes.write().await.get_mut(remote_uuid)
-            && let Some(pos) = remote.messages.iter().position(|m| m.uuid == message_uuid)
-        {
-            remote.messages.remove(pos);
-            let _ = self
-                .inner
-                .event_tx
-                .send(WarpEvent::MessageRemoved(remote_uuid.to_string(), message_uuid.to_string()));
-            return Ok(());
-        }
-        Err(UpdateError::NotFound)
     }
 
     #[instrument(skip(self), level = "info", err)]
@@ -324,26 +241,130 @@ impl RemoteManager {
             .await
             .map_err(ManualConnectionError::FailedToConnect)
     }
+}
+
+impl RemoteManagerInner {
+    pub(crate) async fn update_remote(
+        &self,
+        uuid: &str,
+        f: impl FnOnce(&mut Remote),
+    ) -> Result<(), UpdateError> {
+        if let Some(remote) = self.remotes.write().await.get_mut(uuid) {
+            f(remote);
+            let _ = self.event_tx.send(WarpEvent::RemoteUpdated(uuid.to_string()));
+            Ok(())
+        } else {
+            Err(UpdateError::NotFound)
+        }
+    }
+
+    pub(crate) async fn add_transfer(
+        &self,
+        remote_uuid: &str,
+        transfer: Transfer,
+    ) -> Result<(), UpdateError> {
+        let transfer_uuid = transfer.uuid.clone();
+        if let Some(remote) = self.remotes.write().await.get_mut(remote_uuid) {
+            remote.transfers.push(transfer);
+            let _ = self
+                .event_tx
+                .send(WarpEvent::TransferAdded(remote_uuid.to_string(), transfer_uuid));
+            Ok(())
+        } else {
+            Err(UpdateError::NotFound)
+        }
+    }
+
+    pub(crate) async fn update_transfer(
+        &self,
+        remote_uuid: &str,
+        transfer_uuid: &str,
+        f: impl FnOnce(&mut Transfer),
+    ) -> Result<(), UpdateError> {
+        if let Some(remote) = self.remotes.write().await.get_mut(remote_uuid)
+            && let Some(transfer) = remote.transfers.iter_mut().find(|t| t.uuid == transfer_uuid)
+        {
+            f(transfer);
+            let _ = self.event_tx.send(WarpEvent::TransferUpdated(
+                remote_uuid.to_string(),
+                transfer_uuid.to_string(),
+            ));
+            return Ok(());
+        }
+        Err(UpdateError::NotFound)
+    }
+
+    pub async fn remove_transfer(
+        &self,
+        remote_uuid: &str,
+        transfer_uuid: &str,
+    ) -> Result<(), UpdateError> {
+        if let Some(remote) = self.remotes.write().await.get_mut(remote_uuid)
+            && let Some(pos) = remote.transfers.iter().position(|t| t.uuid == transfer_uuid)
+        {
+            remote.transfers.remove(pos);
+            let _ = self.event_tx.send(WarpEvent::TransferRemoved(
+                remote_uuid.to_string(),
+                transfer_uuid.to_string(),
+            ));
+            return Ok(());
+        }
+        Err(UpdateError::NotFound)
+    }
+
+    #[cfg(feature = "messaging")]
+    pub(crate) async fn add_message(
+        &self,
+        remote_uuid: &str,
+        message: Message,
+    ) -> Result<(), UpdateError> {
+        let message_uuid = message.uuid.clone();
+        if let Some(remote) = self.remotes.write().await.get_mut(remote_uuid) {
+            remote.messages.push(message);
+            let _ =
+                self.event_tx.send(WarpEvent::MessageAdded(remote_uuid.to_string(), message_uuid));
+            Ok(())
+        } else {
+            Err(UpdateError::NotFound)
+        }
+    }
+
+    #[cfg(feature = "messaging")]
+    pub async fn remove_message(
+        &self,
+        remote_uuid: &str,
+        message_uuid: &str,
+    ) -> Result<(), UpdateError> {
+        if let Some(remote) = self.remotes.write().await.get_mut(remote_uuid)
+            && let Some(pos) = remote.messages.iter().position(|m| m.uuid == message_uuid)
+        {
+            remote.messages.remove(pos);
+            let _ = self
+                .event_tx
+                .send(WarpEvent::MessageRemoved(remote_uuid.to_string(), message_uuid.to_string()));
+            return Ok(());
+        }
+        Err(UpdateError::NotFound)
+    }
 
     pub fn subscribe(&self) -> broadcast::Receiver<WarpEvent> {
-        self.inner.event_tx.subscribe()
+        self.event_tx.subscribe()
     }
 
     pub async fn get_worker(&self, uuid: &str) -> Option<Arc<RemoteWorker>> {
-        self.inner.workers.read().await.get(uuid).cloned()
+        self.workers.read().await.get(uuid).cloned()
     }
 
     pub async fn remote(&self, uuid: &str) -> Option<Remote> {
-        self.inner.remotes.read().await.get(uuid).cloned()
+        self.remotes.read().await.get(uuid).cloned()
     }
 
     pub async fn remotes(&self) -> Vec<Remote> {
-        self.inner.remotes.read().await.values().cloned().collect()
+        self.remotes.read().await.values().cloned().collect()
     }
 
     pub async fn transfer(&self, remote_uuid: &str, transfer_uuid: &str) -> Option<Transfer> {
-        self.inner
-            .remotes
+        self.remotes
             .read()
             .await
             .get(remote_uuid)
@@ -355,8 +376,7 @@ impl RemoteManager {
         remote_uuid: &str,
         transfer_timestamp: u64,
     ) -> Option<Transfer> {
-        self.inner
-            .remotes
+        self.remotes
             .read()
             .await
             .get(remote_uuid)
@@ -364,13 +384,12 @@ impl RemoteManager {
     }
 
     pub async fn transfers(&self, remote_uuid: &str) -> Option<Vec<Transfer>> {
-        self.inner.remotes.read().await.get(remote_uuid).map(|r| r.transfers.clone())
+        self.remotes.read().await.get(remote_uuid).map(|r| r.transfers.clone())
     }
 
     #[cfg(feature = "messaging")]
     pub async fn message(&self, remote_uuid: &str, message_uuid: &str) -> Option<Message> {
-        self.inner
-            .remotes
+        self.remotes
             .read()
             .await
             .get(remote_uuid)
@@ -379,6 +398,6 @@ impl RemoteManager {
 
     #[cfg(feature = "messaging")]
     pub async fn messages(&self, remote_uuid: &str) -> Option<Vec<Message>> {
-        self.inner.remotes.read().await.get(remote_uuid).map(|r| r.messages.clone())
+        self.remotes.read().await.get(remote_uuid).map(|r| r.messages.clone())
     }
 }
