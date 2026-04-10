@@ -7,4 +7,5 @@ pub(crate) mod grpc;
 pub(crate) mod server;
 pub mod types;
 
-pub use server::{WarpinatorServer, remote_manager};
+pub use server::remote_worker::ConnectRemoteError;
+pub use server::{WarpinatorBuildError, WarpinatorServeError, WarpinatorServer, remote_manager};
