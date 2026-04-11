@@ -22,7 +22,13 @@ pub(crate) async fn send_stream(
     source_paths: Vec<PathBuf>,
     tx: Sender<Result<FileChunk, Status>>,
     cancellation_token: CancellationToken,
+    #[cfg(feature = "power_manager")] power_manager: std::sync::Arc<
+        dyn crate::server::power_manager::PowerManager,
+    >,
 ) {
+    #[cfg(feature = "power_manager")]
+    let _wake_lock = crate::server::power_manager::WakeLockGuard::new(power_manager);
+
     let result = send_stream_inner(
         &remote_manager,
         &remote_uuid,

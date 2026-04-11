@@ -42,4 +42,5 @@ bytesize = "2.3.1"
 [features]
 default = ["messaging"]
 messaging = []
+power_manager = []
 serde = ["dep:serde"]

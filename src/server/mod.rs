@@ -1,5 +1,7 @@
 pub mod authenticator;
 mod discovery;
+#[cfg(feature = "power_manager")]
+pub mod power_manager;
 pub mod remote_manager;
 pub mod remote_worker;
 pub mod transfers;
@@ -38,6 +40,10 @@ pub enum WarpinatorBuildError {
 
     #[error("failed to create mDNS daemon: {0}")]
     MdnsDaemon(#[from] mdns_sd::Error),
+
+    #[cfg(feature = "power_manager")]
+    #[error("no power manager provided. disable the feature if unwanted")]
+    NoPowerManager,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,10 +67,13 @@ pub enum WarpinatorServeError {
     ServiceThread(#[from] tokio::task::JoinError),
 }
 
+#[derive(Default)]
 pub struct WarpinatorServerBuilder {
     user_config: Option<UserConfig>,
     protocol_config: Option<ProtocolConfig>,
     service_name: Option<String>,
+    #[cfg(feature = "power_manager")]
+    power_manager: Option<Arc<dyn power_manager::PowerManager + Send + Sync>>,
 }
 
 impl WarpinatorServerBuilder {
@@ -83,10 +92,23 @@ impl WarpinatorServerBuilder {
         self
     }
 
+    #[cfg(feature = "power_manager")]
+    pub fn power_manager(
+        mut self,
+        power_manager: Arc<dyn power_manager::PowerManager + Send + Sync>,
+    ) -> Self {
+        self.power_manager = Some(power_manager);
+        self
+    }
+
     pub fn build(self) -> Result<WarpinatorServer, WarpinatorBuildError> {
         let service_name = self.service_name.ok_or(WarpinatorBuildError::MissingServiceName)?;
         let user_config = self.user_config.unwrap_or_default();
         let protocol_config = self.protocol_config.unwrap_or_default();
+
+        #[cfg(feature = "power_manager")]
+        let power_manager = self.power_manager.ok_or(WarpinatorBuildError::NoPowerManager)?;
+
         let cancellation_token = CancellationToken::new();
 
         let authenticator = Arc::new(authenticator::Authenticator::new(
@@ -101,6 +123,8 @@ impl WarpinatorServerBuilder {
             protocol_config.clone(),
             user_config.clone(),
             service_name.clone(),
+            #[cfg(feature = "power_manager")]
+            power_manager.clone(),
         )
         .ok_or(WarpinatorBuildError::RemoteManagerInit)?;
 
@@ -112,6 +136,8 @@ impl WarpinatorServerBuilder {
             authenticator,
             remotes,
             cancellation_token,
+            #[cfg(feature = "power_manager")]
+            power_manager,
         })
     }
 }
@@ -124,11 +150,13 @@ pub struct WarpinatorServer {
     authenticator: Arc<authenticator::Authenticator>,
     pub remotes: remote_manager::RemoteManager,
     cancellation_token: CancellationToken,
+    #[cfg(feature = "power_manager")]
+    power_manager: Arc<dyn power_manager::PowerManager>,
 }
 
 impl WarpinatorServer {
     pub fn builder() -> WarpinatorServerBuilder {
-        WarpinatorServerBuilder { user_config: None, protocol_config: None, service_name: None }
+        WarpinatorServerBuilder::default()
     }
 
     pub async fn serve(self) -> Result<(), WarpinatorServeError> {
@@ -190,6 +218,8 @@ impl WarpinatorServer {
             self.user_config.clone(),
             self.protocol_config.clone(),
             self.remotes.clone(),
+            #[cfg(feature = "power_manager")]
+            self.power_manager.clone(),
         );
         let warp_ct = self.cancellation_token.clone();
         let warp_handle = tokio::spawn(async move {
@@ -261,8 +291,13 @@ impl WarpinatorServer {
             "mDNS announced",
         );
 
-        let discovery_service =
-            DiscoveryService::new(self.remotes.clone(), mdns.clone(), SERVICE_DOMAIN.to_string());
+        let discovery_service = DiscoveryService::new(
+            self.remotes.clone(),
+            mdns.clone(),
+            SERVICE_DOMAIN.to_string(),
+            #[cfg(feature = "power_manager")]
+            self.power_manager.clone(),
+        );
 
         tokio::spawn(async move {
             let _ = discovery_service.start().await;

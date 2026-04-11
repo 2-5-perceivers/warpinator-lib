@@ -24,6 +24,8 @@ pub struct WarpServer {
     user_config: UserConfig,
     protocol_config: ProtocolConfig,
     remote_manager: RemoteManager,
+    #[cfg(feature = "power_manager")]
+    power_manager: std::sync::Arc<dyn crate::server::power_manager::PowerManager>,
 }
 
 impl WarpServer {
@@ -31,8 +33,17 @@ impl WarpServer {
         user_config: UserConfig,
         protocol_config: ProtocolConfig,
         remote_manager: RemoteManager,
+        #[cfg(feature = "power_manager")] power_manager: std::sync::Arc<
+            dyn crate::server::power_manager::PowerManager,
+        >,
     ) -> Self {
-        Self { user_config, protocol_config, remote_manager }
+        Self {
+            user_config,
+            protocol_config,
+            remote_manager,
+            #[cfg(feature = "power_manager")]
+            power_manager,
+        }
     }
 }
 
@@ -220,6 +231,8 @@ impl Warp for WarpServer {
             source_paths,
             tx,
             cancellation_token,
+            #[cfg(feature = "power_manager")]
+            self.power_manager.clone(),
         ));
 
         Ok(Response::new(ReceiverStream::new(rx)))

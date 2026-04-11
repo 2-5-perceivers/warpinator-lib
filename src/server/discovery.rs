@@ -26,6 +26,8 @@ pub struct DiscoveryService {
     remote_manager: remote_manager::RemoteManager,
     mdns: ServiceDaemon,
     service_domain: String,
+    #[cfg(feature = "power_manager")]
+    power_manager: std::sync::Arc<dyn crate::server::power_manager::PowerManager>,
 }
 
 impl DiscoveryService {
@@ -33,8 +35,17 @@ impl DiscoveryService {
         remote_manager: remote_manager::RemoteManager,
         mdns: ServiceDaemon,
         service_domain: String,
+        #[cfg(feature = "power_manager")] power_manager: std::sync::Arc<
+            dyn crate::server::power_manager::PowerManager,
+        >,
     ) -> Self {
-        Self { remote_manager, mdns, service_domain }
+        Self {
+            remote_manager,
+            mdns,
+            service_domain,
+            #[cfg(feature = "power_manager")]
+            power_manager,
+        }
     }
 
     #[instrument(skip(self), err)]
@@ -78,6 +89,11 @@ impl DiscoveryService {
         &self,
         resolved_service: ResolvedService,
     ) -> Result<(), DiscoveryNewServiceError> {
+        // Lock the cpu so the connection is handled right
+        #[cfg(feature = "power_manager")]
+        let _wake_lock =
+            crate::server::power_manager::WakeLockGuard::new(self.power_manager.clone());
+
         let fullname = resolved_service.get_fullname();
         let name = fullname
             .trim_end_matches(&format!(".{}", resolved_service.ty_domain))

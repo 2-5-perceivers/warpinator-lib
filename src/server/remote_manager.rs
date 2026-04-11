@@ -76,6 +76,8 @@ pub struct RemoteManagerInner {
     server_hostname: String,
     server_ip: IpAddr,
     server_fullname: String,
+    #[cfg(feature = "power_manager")]
+    power_manager: Arc<dyn crate::server::power_manager::PowerManager>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +112,9 @@ impl RemoteManager {
         protocol_config: ProtocolConfig,
         user_config: UserConfig,
         server_fullname: String,
+        #[cfg(feature = "power_manager")] power_manager: Arc<
+            dyn crate::server::power_manager::PowerManager,
+        >,
     ) -> Option<Self> {
         let (tx, _) = broadcast::channel(64);
         let inner = Arc::new(RemoteManagerInner {
@@ -122,6 +127,8 @@ impl RemoteManager {
             server_hostname: user_config.hostname.clone(),
             server_ip: IpAddr::from(user_config.bind_addr_v4?),
             server_fullname: server_fullname.clone(),
+            #[cfg(feature = "power_manager")]
+            power_manager,
         });
         Some(Self {
             inner,
@@ -153,6 +160,8 @@ impl RemoteManager {
             self.inner.server_hostname.clone(),
             self.inner.server_ip,
             self.inner.server_fullname.clone(),
+            #[cfg(feature = "power_manager")]
+            self.power_manager.clone(),
         );
 
         let worker = Arc::new(worker);

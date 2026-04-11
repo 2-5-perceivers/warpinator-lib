@@ -173,7 +173,13 @@ pub(crate) async fn receive_stream(
     mut stream: Streaming<FileChunk>,
     destination: PathBuf,
     cancellation_token: CancellationToken,
+    #[cfg(feature = "power_manager")] power_manager: Arc<
+        dyn crate::server::power_manager::PowerManager + Send + Sync,
+    >,
 ) {
+    #[cfg(feature = "power_manager")]
+    let _wake_lock = crate::server::power_manager::WakeLockGuard::new(power_manager);
+
     let result = receive_stream_inner(
         &remote_manager,
         &remote_uuid,

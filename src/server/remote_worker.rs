@@ -1,5 +1,5 @@
+use std::fmt::Debug;
 use std::net::IpAddr;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,6 +110,8 @@ pub struct RemoteWorker {
     server_hostname: String,
     server_ip: IpAddr,
     server_fullname: String,
+    #[cfg(feature = "power_manager")]
+    power_manager: Arc<dyn crate::server::power_manager::PowerManager>,
 }
 
 impl RemoteWorker {
@@ -122,6 +124,9 @@ impl RemoteWorker {
         server_hostname: String,
         server_ip: IpAddr,
         server_fullname: String,
+        #[cfg(feature = "power_manager")] power_manager: Arc<
+            dyn crate::server::power_manager::PowerManager,
+        >,
     ) -> (Self, watch::Receiver<RemoteState>) {
         let (state_tx, state_rx) = watch::channel(RemoteState::Disconnected);
 
@@ -137,6 +142,8 @@ impl RemoteWorker {
             server_hostname,
             server_ip,
             server_fullname,
+            #[cfg(feature = "power_manager")]
+            power_manager,
         };
 
         (worker, state_rx)
@@ -222,6 +229,10 @@ impl RemoteWorker {
 
     #[instrument(skip(self), fields(uuid = self.uuid), err(level = "warn"))]
     pub async fn connect(&self) -> Result<(), ConnectRemoteError> {
+        #[cfg(feature = "power_manager")]
+        let _wake_lock =
+            crate::server::power_manager::WakeLockGuard::new(self.power_manager.clone());
+
         self.set_state(RemoteState::Connecting).await?;
 
         let cert_pem = match self.receive_certificate().await {
@@ -560,6 +571,8 @@ impl RemoteWorker {
             stream,
             destination,
             self.cancellation_token.child_token(),
+            #[cfg(feature = "power_manager")]
+            self.power_manager.clone(),
         ));
 
         Ok(())
