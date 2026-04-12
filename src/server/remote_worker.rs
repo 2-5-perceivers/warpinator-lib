@@ -444,13 +444,19 @@ impl RemoteWorker {
             bytes.extend_from_slice(&chunk.avatar_chunk);
         }
 
+        let picture;
         if !bytes.is_empty() {
-            self.manager()?
-                .update_remote(&self.uuid, |r| {
-                    r.picture = Some(bytes.clone());
-                })
-                .await?;
+            picture = Some(Arc::new(bytes));
+        } else {
+            picture = None;
         }
+
+        self.manager()?
+            .update_remote(&self.uuid, |r| {
+                r.picture = picture;
+                r.picture_version = r.picture_version.wrapping_add(1);
+            })
+            .await?;
 
         Ok(())
     }

@@ -1,4 +1,5 @@
 use std::net::IpAddr;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -48,7 +49,10 @@ pub struct Remote {
     pub username: String,
     pub hostname: String,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub picture: Option<Vec<u8>>,
+    pub picture: Option<Arc<Vec<u8>>>,
+    /// A small number that changes everytime the data does. Do not use it to
+    /// cache old versions.
+    pub picture_version: u8,
 
     pub state: RemoteState,
 
@@ -87,6 +91,7 @@ impl Remote {
             username: "".to_string(),
             hostname,
             picture: None,
+            picture_version: 0,
             state: RemoteState::Disconnected,
             #[cfg(feature = "messaging")]
             messages: vec![],
