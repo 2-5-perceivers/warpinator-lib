@@ -202,7 +202,7 @@ impl Warp for WarpServer {
 
         let transfer = self
             .remote_manager
-            .transfer_by_timestamp(&req.ident, req.timestamp)
+            .transfer_by_protocol_id(&req.ident, req.timestamp)
             .await
             .ok_or_else(|| Status::not_found("Transfer not found"))?;
 
@@ -253,7 +253,7 @@ impl Warp for WarpServer {
 
         let transfer = self
             .remote_manager
-            .transfer_by_timestamp(&info.ident, info.timestamp)
+            .transfer_by_protocol_id(&info.ident, info.timestamp)
             .await
             .ok_or_else(|| Status::not_found("Transfer not found"))?;
 
@@ -294,7 +294,7 @@ impl Warp for WarpServer {
 
         let transfer = self
             .remote_manager
-            .transfer_by_timestamp(&req.ident, req.timestamp)
+            .transfer_by_protocol_id(&req.ident, req.timestamp)
             .await
             .ok_or_else(|| Status::not_found("Transfer not found"))?;
 

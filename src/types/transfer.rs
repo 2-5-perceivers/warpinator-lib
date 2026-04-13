@@ -86,6 +86,9 @@ pub struct Transfer {
     pub uuid: String,
     /// Unique identifier of the parent remote
     pub remote_uuid: String,
+    /// The id of the transfer used in the protocol
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub(crate) protocol_id: u64,
 
     /// Current state of the transfer
     pub state: TransferState,
@@ -126,11 +129,6 @@ pub enum TransferKind {
     },
     Incoming {
         destination: PathBuf,
-        /// The timestamp of the transfer on the remote side. This is used as id
-        /// for the transfer in the protocol. Ironically, this might not be a
-        /// timestamp
-        #[cfg_attr(feature = "serde", serde(skip))]
-        remote_timestamp: u64,
     },
 }
 
@@ -148,9 +146,14 @@ impl Transfer {
         source_paths: Vec<PathBuf>,
         cancellation_token: CancellationToken,
     ) -> Self {
+        let id = uuid::Uuid::new_v4();
+        let (id_h, id_l) = id.as_u64_pair();
+
         Transfer {
-            uuid: uuid::Uuid::new_v4().to_string(),
+            uuid: id.to_string(),
             remote_uuid,
+            protocol_id: id_h.wrapping_add(id_l), /* simple way to generate a protocol id from
+                                                   * the uuid */
             state: TransferState::Initializing,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
             total_bytes: 0,
@@ -168,7 +171,7 @@ impl Transfer {
         TransferOpRequest {
             info: Some(OpInfo {
                 ident: service_id.to_string(),
-                timestamp: self.timestamp,
+                timestamp: self.protocol_id,
                 readable_name: String::default(),
                 use_compression: false,
             }),
@@ -276,6 +279,7 @@ impl From<TransferOpRequest> for Transfer {
                 .expect("TransferOpRequest must have info")
                 .ident
                 .clone(),
+            protocol_id: value.info.expect("TransferOpRequest must have info").timestamp,
             state: TransferState::WaitingPermission,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
             total_bytes: value.size,
@@ -296,7 +300,6 @@ impl From<TransferOpRequest> for Transfer {
             kind: TransferKind::Incoming {
                 // default destination, should be updated when the transfer is accepted
                 destination: PathBuf::from("/"),
-                remote_timestamp: value.info.expect("TransferOpRequest must have info").timestamp,
             },
         }
     }

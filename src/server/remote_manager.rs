@@ -20,7 +20,7 @@ use crate::server::remote_worker::{ConnectRemoteError, RemoteWorker};
 #[cfg(feature = "messaging")]
 use crate::types::message::Message;
 use crate::types::remote::{Remote, RemoteState};
-use crate::types::transfer::Transfer;
+use crate::types::transfer::{Transfer, TransferKind};
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -380,16 +380,12 @@ impl RemoteManagerInner {
             .and_then(|r| r.transfers.iter().find(|t| t.uuid == transfer_uuid).cloned())
     }
 
-    pub async fn transfer_by_timestamp(
-        &self,
-        remote_uuid: &str,
-        transfer_timestamp: u64,
-    ) -> Option<Transfer> {
+    pub async fn transfer_by_protocol_id(&self, remote_uuid: &str, id: u64) -> Option<Transfer> {
         self.remotes
             .read()
             .await
             .get(remote_uuid)
-            .and_then(|r| r.transfers.iter().find(|t| t.timestamp == transfer_timestamp).cloned())
+            .and_then(|r| r.transfers.iter().find(|t| t.protocol_id == id).cloned())
     }
 
     pub async fn transfers(&self, remote_uuid: &str) -> Option<Vec<Transfer>> {

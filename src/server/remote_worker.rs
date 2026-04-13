@@ -541,19 +541,16 @@ impl RemoteWorker {
             .await
             .ok_or(RemoteWorkerError::TransferNotFound)?;
 
-        let remote_timestamp = match transfer.kind {
-            TransferKind::Incoming { destination: _, remote_timestamp } => remote_timestamp,
-            TransferKind::Outgoing { .. } => {
-                return Err(RemoteWorkerError::IllegalOperation(
-                    "Cannot accept an outgoing transfer".into(),
-                ));
-            }
-        };
+        if let TransferKind::Outgoing { .. } = &transfer.kind {
+            return Err(RemoteWorkerError::IllegalOperation(
+                "Cannot accept an outgoing transfer".into(),
+            ));
+        }
 
         let stream = client
             .start_transfer(OpInfo {
                 ident: self.server_fullname.clone(),
-                timestamp: remote_timestamp,
+                timestamp: transfer.protocol_id,
                 use_compression: false,
                 readable_name: String::default(),
             })
@@ -565,8 +562,7 @@ impl RemoteWorker {
         self.manager()?
             .update_transfer(&self.uuid, transfer_uuid, |t| {
                 t.state = TransferState::InProgress;
-                t.kind =
-                    TransferKind::Incoming { destination: destination.clone(), remote_timestamp };
+                t.kind = TransferKind::Incoming { destination: destination.clone() };
             })
             .await?;
 
@@ -602,19 +598,15 @@ impl RemoteWorker {
             .await
             .ok_or(RemoteWorkerError::TransferNotFound)?;
 
-        let timestamp = match transfer.kind {
-            TransferKind::Incoming { remote_timestamp, .. } => remote_timestamp,
-            TransferKind::Outgoing { cancellation_token, .. } => {
-                cancellation_token.cancel();
-                transfer.timestamp
-            }
-        };
+        if let TransferKind::Outgoing { cancellation_token, .. } = &transfer.kind {
+            cancellation_token.cancel();
+        }
 
         client
             .stop_transfer(StopInfo {
                 info: Some(OpInfo {
                     ident: self.server_fullname.clone(),
-                    timestamp,
+                    timestamp: transfer.protocol_id,
                     readable_name: String::new(),
                     use_compression: false,
                 }),
@@ -645,20 +637,18 @@ impl RemoteWorker {
             .await
             .ok_or(RemoteWorkerError::TransferNotFound)?;
 
-        let (new_state, timestamp) = match transfer.kind {
-            TransferKind::Incoming { remote_timestamp, .. } => {
-                (TransferState::Denied, remote_timestamp)
-            }
+        let new_state = match transfer.kind {
+            TransferKind::Incoming { .. } => TransferState::Denied,
             TransferKind::Outgoing { cancellation_token, .. } => {
                 cancellation_token.cancel();
-                (TransferState::Canceled, transfer.timestamp)
+                TransferState::Canceled
             }
         };
 
         client
             .cancel_transfer_op_request(OpInfo {
                 ident: self.server_fullname.clone(),
-                timestamp,
+                timestamp: transfer.protocol_id,
                 readable_name: String::new(),
                 use_compression: false,
             })
