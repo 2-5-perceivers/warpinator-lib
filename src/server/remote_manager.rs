@@ -20,7 +20,7 @@ use crate::server::remote_worker::{ConnectRemoteError, RemoteWorker};
 #[cfg(feature = "messaging")]
 use crate::types::message::Message;
 use crate::types::remote::{Remote, RemoteState};
-use crate::types::transfer::{Transfer, TransferKind};
+use crate::types::transfer::Transfer;
 
 #[non_exhaustive]
 #[derive(Debug, Clone)]
@@ -116,7 +116,7 @@ impl RemoteManager {
             dyn crate::server::power_manager::PowerManager,
         >,
     ) -> Option<Self> {
-        let (tx, _) = broadcast::channel(64);
+        let (tx, _) = broadcast::channel(256);
         let inner = Arc::new(RemoteManagerInner {
             remotes: RwLock::new(HashMap::new()),
             workers: RwLock::new(HashMap::new()),
@@ -293,11 +293,19 @@ impl RemoteManagerInner {
         if let Some(remote) = self.remotes.write().await.get_mut(remote_uuid)
             && let Some(transfer) = remote.transfers.iter_mut().find(|t| t.uuid == transfer_uuid)
         {
+            let old_state = transfer.state.clone();
+
             f(transfer);
-            let _ = self.event_tx.send(WarpEvent::TransferUpdated(
-                remote_uuid.to_string(),
-                transfer_uuid.to_string(),
-            ));
+
+            if self.event_tx.len() < 128
+                || std::mem::discriminant(&transfer.state) != std::mem::discriminant(&old_state)
+            {
+                let _ = self.event_tx.send(WarpEvent::TransferUpdated(
+                    remote_uuid.to_string(),
+                    transfer_uuid.to_string(),
+                ));
+            }
+
             return Ok(());
         }
         Err(UpdateError::NotFound)
