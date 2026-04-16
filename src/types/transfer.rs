@@ -1,9 +1,7 @@
 use std::io::ErrorKind as IoErrorKind;
 use std::path::{Path, PathBuf};
 
-use async_walkdir::WalkDir;
 use thiserror::Error;
-use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
@@ -37,6 +35,9 @@ pub enum TransferError {
     IoError(#[cfg_attr(feature = "serde", serde(skip))] IoErrorKind),
     #[error("Transfer failed due an error on the other side")]
     RemoteError,
+    #[cfg(feature = "virtual_filesystem")]
+    #[error(transparent)]
+    VirtualFilesystemError(#[from] crate::filesystem::vfs::VirtualFilesystemError),
 }
 
 impl From<IoErrorKind> for TransferError {
@@ -134,6 +135,9 @@ pub enum TransferKind {
 
 #[derive(Error, Debug)]
 pub enum SourcePathError {
+    #[cfg(feature = "virtual_filesystem")]
+    #[error(transparent)]
+    VirtualFilesystemError(#[from] crate::filesystem::vfs::VirtualFilesystemError),
     #[error("IO error while processing source paths: {0}")]
     IoError(std::io::Error),
     #[error("Unsupported path type: {0}")]
@@ -186,11 +190,15 @@ impl Transfer {
         }
     }
 
+    #[cfg(feature = "real_filesystem")]
     #[instrument(skip_all, level = "debug", err(level = "warn"))]
     pub async fn process_paths<P: AsRef<Path>>(
         &mut self,
         paths: &[P],
     ) -> Result<(), SourcePathError> {
+        use async_walkdir::WalkDir;
+        use tokio_stream::StreamExt;
+
         let mut total_size = 0;
         let mut file_count = 0;
         let mut entry_names = Vec::new();
@@ -259,6 +267,71 @@ impl Transfer {
             if let Some(file_name) = p.as_ref().file_name() {
                 entry_names.push(file_name.to_string_lossy().to_string());
             }
+        }
+        self.single_name = None;
+        self.single_mime_type = None;
+        self.total_bytes = total_size;
+        self.entry_names = entry_names;
+        self.file_count = file_count;
+        Ok(())
+    }
+
+    #[cfg(feature = "virtual_filesystem")]
+    #[instrument(skip_all, level = "debug", err(level = "warn"))]
+    pub async fn process_paths<P: AsRef<Path>>(
+        &mut self,
+        paths: &[P],
+    ) -> Result<(), SourcePathError> {
+        let mut total_size = 0;
+        let mut file_count = 0;
+        let mut entry_names = Vec::new();
+
+        if paths.len() == 1 {
+            let metadata =
+                crate::filesystem::vfs::metadata(paths[0].as_ref().to_string_lossy().as_ref())
+                    .await?;
+
+            if !metadata.is_dir {
+                total_size = metadata.size;
+                file_count = 1;
+                let file_name = metadata.name;
+
+                entry_names.push(file_name.clone());
+                let single_name = Some(file_name.clone());
+                let single_mime_type = Some(
+                    mime_guess::from_ext(
+                        &file_name.split_once('.').map(|s| s.1).unwrap_or_default(),
+                    )
+                    .first_or_octet_stream()
+                    .essence_str()
+                    .to_string(),
+                );
+
+                self.single_name = single_name;
+                self.single_mime_type = single_mime_type;
+                self.total_bytes = total_size;
+                self.entry_names = entry_names;
+                self.file_count = file_count;
+                return Ok(());
+            }
+        }
+
+        for p in paths {
+            let path_metadata =
+                crate::filesystem::vfs::metadata(p.as_ref().to_string_lossy().as_ref()).await?;
+
+            if path_metadata.is_dir {
+                let entries =
+                    crate::filesystem::vfs::read_dir(p.as_ref().to_string_lossy().as_ref()).await?;
+                for entry in entries {
+                    total_size += entry.size;
+                    file_count += entry.file_count;
+                }
+            } else {
+                total_size += path_metadata.size;
+                file_count += path_metadata.file_count;
+            }
+            entry_names.push(path_metadata.name);
         }
         self.single_name = None;
         self.single_mime_type = None;

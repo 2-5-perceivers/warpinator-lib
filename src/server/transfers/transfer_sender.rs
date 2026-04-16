@@ -1,9 +1,12 @@
 use std::fs::Metadata;
-use std::path::{Path, PathBuf};
+#[cfg(feature = "real_filesystem")]
+use std::path::Path;
+use std::path::PathBuf;
 
-use async_walkdir::WalkDir;
+use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc::Sender;
+#[cfg(feature = "real_filesystem")]
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tonic::Status;
@@ -70,12 +73,20 @@ async fn send_stream_inner(
             return Ok(false);
         }
 
+        #[cfg(feature = "real_filesystem")]
         let base = source.parent().ok_or(TransferError::FailedToProcessFiles)?;
 
+        #[cfg(feature = "real_filesystem")]
         let source_metadata =
             tokio::fs::metadata(source).await.map_err(|e| TransferError::from(e.kind()))?;
 
+        #[cfg(feature = "virtual_filesystem")]
+        let source_metadata =
+            crate::filesystem::vfs::metadata(source.to_str().ok_or(TransferError::UnsafePath)?)
+                .await?;
+
         if source_metadata.is_file() {
+            #[cfg(feature = "real_filesystem")]
             send_file(
                 source,
                 base,
@@ -88,35 +99,58 @@ async fn send_stream_inner(
                 cancellation_token,
             )
             .await?;
-        } else if source_metadata.is_dir() {
-            let rel = source.strip_prefix(base).unwrap_or(source);
-            let chunk = FileChunk {
-                relative_path: rel.to_string_lossy().to_string(),
-                file_type: FileType::Directory.into(),
-                chunk: vec![].into(),
-                file_mode: 0o755, // TODO: read & write actual permissions on Unix systems
-                time: None,
-                symlink_target: String::new(),
-            };
-            if tx.send(Ok(chunk)).await.is_err() {
-                return Err(TransferError::ConnectionLost);
-            }
 
+            #[cfg(feature = "virtual_filesystem")]
+            send_file(
+                source.to_str().ok_or(TransferError::UnsafePath)?,
+                source_metadata.name.clone(),
+                remote_manager,
+                remote_uuid,
+                transfer_uuid,
+                &mut speed,
+                tx,
+                cancellation_token,
+            )
+            .await?;
+        } else if source_metadata.is_dir() {
             // Walk contents
-            let mut walker = WalkDir::new(source);
-            while let Some(entry) = walker.next().await {
+            #[cfg(feature = "real_filesystem")]
+            let mut walker = async_walkdir::WalkDir::new(source);
+            #[cfg(feature = "virtual_filesystem")]
+            let mut walker = crate::filesystem::vfs::walkdir::VirtualWalkDir::new(
+                source.to_str().ok_or(TransferError::UnsafePath)?.to_string(),
+                source_metadata.name.clone(),
+            );
+
+            while let Some(entry) = {
+                #[cfg(feature = "real_filesystem")]
+                {
+                    walker.next().await
+                }
+                #[cfg(feature = "virtual_filesystem")]
+                {
+                    walker.next().await?
+                }
+            } {
                 if cancellation_token.is_cancelled() {
                     return Ok(false);
                 }
-
+                #[cfg(feature = "real_filesystem")]
                 let entry = entry.map_err(|_| TransferError::FailedToProcessFiles)?;
+                #[cfg(feature = "real_filesystem")]
                 let path = entry.path();
-                let metadata = entry.metadata().await.map_err(|e| TransferError::from(e.kind()))?;
+                #[cfg(feature = "real_filesystem")]
+                let entry = entry.metadata().await.map_err(|e| TransferError::from(e.kind()))?;
 
-                if metadata.is_dir() {
-                    let rel = path.strip_prefix(base).unwrap_or(&path);
+                if entry.is_dir() {
+                    #[cfg(feature = "real_filesystem")]
+                    let rel =
+                        path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
+                    #[cfg(feature = "virtual_filesystem")]
+                    let rel = entry.relative_path();
+
                     let chunk = FileChunk {
-                        relative_path: rel.to_string_lossy().to_string(),
+                        relative_path: rel,
                         file_type: FileType::Directory.into(),
                         chunk: vec![].into(),
                         file_mode: 0o755,
@@ -126,14 +160,28 @@ async fn send_stream_inner(
                     if tx.send(Ok(chunk)).await.is_err() {
                         return Err(TransferError::ConnectionLost);
                     }
-                } else if metadata.is_file() {
+                } else if entry.is_file() {
+                    #[cfg(feature = "real_filesystem")]
                     send_file(
                         &path,
                         base,
                         remote_manager,
                         remote_uuid,
                         transfer_uuid,
-                        metadata,
+                        entry,
+                        &mut speed,
+                        tx,
+                        cancellation_token,
+                    )
+                    .await?;
+
+                    #[cfg(feature = "virtual_filesystem")]
+                    send_file(
+                        entry.path.as_str(),
+                        entry.relative_path(),
+                        remote_manager,
+                        remote_uuid,
+                        transfer_uuid,
                         &mut speed,
                         tx,
                         cancellation_token,
@@ -148,6 +196,9 @@ async fn send_stream_inner(
     Ok(true)
 }
 
+// Send file implementation
+
+#[cfg(feature = "real_filesystem")]
 async fn send_file(
     path: &Path,
     base: &Path,
@@ -162,12 +213,65 @@ async fn send_file(
     let rel = path.strip_prefix(base).unwrap_or(path);
     let rel_str = rel.to_string_lossy().to_string();
 
+    let file = File::open(path).await.map_err(|e| TransferError::from(e.kind()))?;
+
+    send_file_inner(
+        file,
+        rel_str,
+        remote_manager,
+        remote_uuid,
+        transfer_uuid,
+        metadata,
+        speed,
+        tx,
+        cancellation_token,
+    )
+    .await
+}
+
+#[cfg(feature = "virtual_filesystem")]
+async fn send_file(
+    path: &str,
+    rel: String,
+    remote_manager: &RemoteManager,
+    remote_uuid: &str,
+    transfer_uuid: &str,
+    speed: &mut MovingAverageCalculator,
+    tx: &Sender<Result<FileChunk, Status>>,
+    cancellation_token: &CancellationToken,
+) -> Result<(), TransferError> {
+    let file = crate::filesystem::vfs::open_file(path).await?;
+    let metadata = file.metadata().await.map_err(|e| e.kind())?;
+
+    send_file_inner(
+        file,
+        rel,
+        remote_manager,
+        remote_uuid,
+        transfer_uuid,
+        metadata,
+        speed,
+        tx,
+        cancellation_token,
+    )
+    .await
+}
+
+async fn send_file_inner(
+    mut file: File,
+    relative_path: String,
+    remote_manager: &RemoteManager,
+    remote_uuid: &str,
+    transfer_uuid: &str,
+    metadata: Metadata,
+    speed: &mut MovingAverageCalculator,
+    tx: &Sender<Result<FileChunk, Status>>,
+    cancellation_token: &CancellationToken,
+) -> Result<(), TransferError> {
     let file_time = metadata.modified().ok().map(|t| {
         let duration = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
         FileTime { mtime: duration.as_secs(), mtime_usec: duration.subsec_millis() * 1000 }
     });
-
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| TransferError::from(e.kind()))?;
 
     let mut buffer = vec![0u8; CHUNK_SIZE];
     let mut first_chunk = true;
@@ -183,7 +287,7 @@ async fn send_file(
         }
 
         let chunk = FileChunk {
-            relative_path: rel_str.clone(),
+            relative_path: relative_path.clone(),
             file_type: FileType::File.into(),
             chunk: buffer[..n].to_vec().into(),
             file_mode: 0o644,

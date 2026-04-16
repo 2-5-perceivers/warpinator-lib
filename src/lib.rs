@@ -3,6 +3,7 @@ pub(crate) mod proto {
 }
 
 pub mod config;
+pub mod filesystem;
 pub(crate) mod grpc;
 pub(crate) mod server;
 pub mod types;
