@@ -329,7 +329,7 @@ impl Transfer {
                 }
             } else {
                 total_size += path_metadata.size;
-                file_count += path_metadata.file_count;
+                file_count += 1;
             }
             entry_names.push(path_metadata.name);
         }
