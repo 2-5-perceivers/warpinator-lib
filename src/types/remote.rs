@@ -2,6 +2,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use thiserror::Error;
+use tokio::sync::RwLock;
 
 #[cfg(feature = "messaging")]
 use crate::types::message::Message;
@@ -49,7 +50,7 @@ pub struct Remote {
     pub username: String,
     pub hostname: String,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub picture: Option<Arc<Vec<u8>>>,
+    pub picture: Option<Arc<RwLock<Vec<u8>>>>,
     /// A small number that changes everytime the data does. Do not use it to
     /// cache old versions.
     pub picture_version: u8,

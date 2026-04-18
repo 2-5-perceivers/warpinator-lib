@@ -446,14 +446,18 @@ impl RemoteWorker {
 
         let picture;
         if !bytes.is_empty() {
-            picture = Some(Arc::new(bytes));
+            picture = Some(bytes);
         } else {
             picture = None;
         }
 
         self.manager()?
-            .update_remote(&self.uuid, |r| {
-                r.picture = picture;
+            .update_remote_async(&self.uuid, async |r| {
+                match (r.picture.as_ref(), picture) {
+                    (Some(arc), Some(pic)) => *arc.write().await = pic,
+                    (None, Some(pic)) => r.picture = Some(Arc::new(RwLock::new(pic))),
+                    _ => r.picture = None,
+                }
                 r.picture_version = r.picture_version.wrapping_add(1);
             })
             .await?;

@@ -267,6 +267,20 @@ impl RemoteManagerInner {
         }
     }
 
+    pub(crate) async fn update_remote_async<F>(&self, uuid: &str, f: F) -> Result<(), UpdateError>
+    where
+        F: AsyncFnOnce(&mut Remote),
+    {
+        if let Some(remote) = self.remotes.write().await.get_mut(uuid) {
+            let future = f(remote);
+            future.await;
+            let _ = self.event_tx.send(WarpEvent::RemoteUpdated(uuid.to_string()));
+            Ok(())
+        } else {
+            Err(UpdateError::NotFound)
+        }
+    }
+
     pub(crate) async fn add_transfer(
         &self,
         remote_uuid: &str,
