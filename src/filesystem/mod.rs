@@ -4,6 +4,12 @@ compile_error!(
      choose one or the other."
 );
 
+#[cfg(not(any(feature = "virtual_filesystem", feature = "real_filesystem")))]
+compile_error!(
+    "Either the `virtual_filesystem` or `real_filesystem` feature must be enabled. Please enable \
+     one of these features."
+);
+
 #[cfg(all(target_os = "android", feature = "real_filesystem"))]
 compile_error!(
     "The `real_filesystem` feature is not supported on Android. Please use the \

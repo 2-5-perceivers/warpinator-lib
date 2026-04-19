@@ -22,6 +22,7 @@ use crate::proto::{LookupName, OpInfo, StopInfo};
 use crate::remote_manager::{RemoteManagerInner, UpdateError, WeakRemoteManager};
 use crate::server::authenticator::{Authenticator, CertUnboxError};
 use crate::server::transfers::transfer_receiver;
+#[cfg(feature = "messaging")]
 use crate::types::message::{Direction, Message};
 use crate::types::remote::{RemoteConnectionError, RemoteState};
 use crate::types::transfer::{Transfer, TransferError, TransferKind, TransferState};

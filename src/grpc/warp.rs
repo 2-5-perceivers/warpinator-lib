@@ -4,16 +4,16 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{Instrument, field, instrument};
 
-use crate::config::features::ProtocolFeatures;
 use crate::config::protocol::ProtocolConfig;
 use crate::config::user::UserConfig;
-#[cfg(feature = "messaging")]
+use crate::proto::warp_server::Warp;
 use crate::proto::{
     FileChunk, HaveDuplex, LookupName, OpInfo, RemoteMachineAvatar, RemoteMachineInfo, StopInfo,
-    TextMessage, TransferOpRequest, VoidType, warp_server::Warp,
+    TextMessage, TransferOpRequest, VoidType,
 };
 use crate::server::remote_manager::{RemoteManager, WarpEvent};
 use crate::server::transfers::transfer_sender;
+#[cfg(feature = "messaging")]
 use crate::types::message::Message;
 use crate::types::remote::RemoteState;
 use crate::types::transfer::{Transfer, TransferError, TransferKind, TransferState};
@@ -327,7 +327,11 @@ impl Warp for WarpServer {
     ) -> Result<Response<VoidType>, Status> {
         #[cfg(feature = "messaging")]
         {
-            if !self.protocol_config.features.contains(ProtocolFeatures::MESSAGE_SUPPORT) {
+            if !self
+                .protocol_config
+                .features
+                .contains(crate::config::features::ProtocolFeatures::MESSAGE_SUPPORT)
+            {
                 return Err(Status::unimplemented("Messaging feature is disabled"));
             }
 
