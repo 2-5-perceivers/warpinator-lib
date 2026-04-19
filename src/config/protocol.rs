@@ -1,30 +1,12 @@
 use std::time::Duration;
 
-use bitflags::bitflags;
+use crate::config::features::ProtocolFeatures;
 
 const RECONNECT_INTERVAL_DEFAULT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT_DEFAULT: Duration = Duration::from_secs(10);
 
 const PING_INTERVAL_DEFAULT: Duration = Duration::from_secs(10);
 const PING_TIMEOUT_DEFAULT: Duration = Duration::from_secs(5);
-
-bitflags! {
-    #[derive(Clone, Debug)]
-    pub struct ProtocolFeatures: u32 {
-        const NONE = 0;
-        #[cfg(feature = "messaging")]
-        const MESSAGE_SUPPORT = 0b0001;
-    }
-}
-
-impl Default for ProtocolFeatures {
-    fn default() -> Self {
-        let features = ProtocolFeatures::NONE;
-        #[cfg(feature = "messaging")]
-        let features = features | ProtocolFeatures::MESSAGE_SUPPORT;
-        features
-    }
-}
 
 pub struct ProtocolConfigBuilder {
     features: Option<ProtocolFeatures>,

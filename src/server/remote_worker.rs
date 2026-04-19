@@ -15,6 +15,7 @@ use tonic::Status;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig};
 use tracing::instrument;
 
+use crate::config::features::ProtocolFeatures;
 use crate::config::protocol::ProtocolConfig;
 use crate::proto::warp_client::WarpClient;
 use crate::proto::{LookupName, OpInfo, StopInfo};
@@ -423,7 +424,7 @@ impl RemoteWorker {
             .update_remote(&self.uuid, |r| {
                 r.display_name = info.display_name.clone();
                 r.username = info.user_name.clone();
-                // TODO: check for flags
+                r.features = ProtocolFeatures::from_bits_truncate(info.feature_flags);
             })
             .await?;
 

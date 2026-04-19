@@ -4,7 +4,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{Instrument, field, instrument};
 
-use crate::config::protocol::{ProtocolConfig, ProtocolFeatures};
+use crate::config::features::ProtocolFeatures;
+use crate::config::protocol::ProtocolConfig;
 use crate::config::user::UserConfig;
 #[cfg(feature = "messaging")]
 use crate::proto::{

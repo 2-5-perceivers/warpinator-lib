@@ -4,6 +4,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 
+use crate::config::features::ProtocolFeatures;
 #[cfg(feature = "messaging")]
 use crate::types::message::Message;
 use crate::types::transfer::Transfer;
@@ -45,6 +46,7 @@ pub struct Remote {
     pub port: u16,
     pub auth_port: u16,
     pub service_name: String,
+    pub features: ProtocolFeatures,
 
     pub display_name: String,
     pub username: String,
@@ -88,6 +90,7 @@ impl Remote {
             port,
             auth_port,
             service_name,
+            features: ProtocolFeatures::empty(),
             display_name: "".to_string(),
             username: "".to_string(),
             hostname,
